@@ -1,0 +1,39 @@
+# AI 工牌 Agent 主机配置模板(规约 §4:真实 config.yaml 已 gitignore,密钥不入库)
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+llm:
+  provider: "mock"            # mock / openai_compatible(内网模型服务或第三方 API)
+  model: ""                   # 真实 provider 必填,如 "qwen-plus"
+  base_url: ""                # 真实 provider 必填,如 "https://your-llm-gateway/v1"
+  api_key_env: "LLM_API_KEY"  # API Key 只从该环境变量读取;本文件绝不写真实 Key(规约 §4)
+  timeout_s: 30
+  allow_external: false       # 宪法第 3 条例外:真实 LLM 调用须显式开启,企业部署必须为 false
+
+asr:
+  provider: "faster-whisper"  # mock / faster-whisper / funasr / 企业 ASR 服务
+  model: "small"              # benchmark 推荐档(testdata/benchmark/asr_report.md)
+  api_key: "REPLACE_ME"
+  base_url: ""
+  timeout_s: 60
+
+audio:
+  delete_after_transcribe: true   # 宪法第 3 条:转写完成即删
+  tmp_dir: "data/audio_tmp"
+
+briefing:
+  time: "08:30"               # 每日简报生成时间(FR-06)
+
+security:
+  whitelist_commands:         # 语音指令白名单(FR-09),白名单外一律拒绝
+    - complete_task
+    - list_today_tasks
+    - create_task
+
+store:
+  db_path: "data/agent.db"
+
+dev:
+  # 仅限原型:hello 直通配对,跳过 CLI 审批;正式部署必须删除本节(严禁上线)
+  dev_mode: "auto_approve"

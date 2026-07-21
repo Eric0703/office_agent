@@ -1,0 +1,13 @@
+# 规约 §5:L2/L3 音频保存在本地,不进版本库、不二次分发
+l2_public/audio/
+l3_asr_baseline/audio/
+# AISHELL-1 官方全量转写(10MB,属原始语料一部分,抽样脚本本地留档用)
+l3_asr_baseline/aishell_transcript_v0.8.txt
+
+# 大文件与缓存:模型权重、基准原始输出体积大的部分
+benchmark/models/
+**/*.aiff
+.DS_Store
+
+# L1 合成音频可入库(规约允许),但若仓库体积敏感可取消下行注释
+# l1_synthetic/audio/

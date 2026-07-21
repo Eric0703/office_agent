@@ -1,0 +1,38 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# 配置:真实配置不入库(规约 §4),仓库只提供 config.example.yaml 模板
+config.yaml
+
+# 环境变量与密钥:Key 只从环境变量读取(规约 §4),.env 严禁入库
+.env
+.env.*
+!.env.example
+
+# 前端
+node_modules/
+dist/
+test-results/
+playwright-report/
+
+# 运行时数据(08 §4:保留目录结构与 .gitkeep,内容不入库)
+data/*
+!data/.gitkeep
+!data/notes/
+!data/experience/
+!data/audio_tmp/
+data/notes/*
+data/experience/*
+data/audio_tmp/*
+!*/.gitkeep
+
+# 后端运行时数据(同上:agent.db 等内容不入库)
+backend/data/

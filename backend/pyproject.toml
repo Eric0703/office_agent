@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-host"
+version = "0.1.0"
+description = "AI 工牌 Agent 主机(骨架阶段:模块与接口,不含业务逻辑)"
+requires-python = ">=3.11"
+# 已批准依赖(02 §3.2 选型表;选型表外依赖需 Owner 批准,禁止 LangChain 等 Agent 框架)
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pydantic",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# httpx 为 starlette TestClient(fastapi.testclient)的硬性传递依赖,仅测试期使用
+dev = [
+    "pytest",
+    "ruff",
+    "httpx",
+]
+
+[project.scripts]
+agent-host = "agent_host.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "W"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: 慢速用例(真 ASR),默认跳过,--runslow 开启",
+]

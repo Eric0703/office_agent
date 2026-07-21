@@ -1,0 +1,189 @@
+/* 电子纸仿真模式(?eink=a|b):竖向逻辑画布 A/B 统一 300×400(08 §6.3 显示契约;
+   2026-07-20 契约修订:B 档布局与 A 一致,296×128 仅为 2.9" 模组物理参数/协议档位;
+   模组≠工牌外形 60×90mm,两者分离)。
+   画布内严格纯黑白:禁灰阶/渐变/阴影/动画/圆角 >2px;
+   画布禁止网页滚动:内容超限由主机按档截断(契约 §6.4)或端侧翻页;
+   录音红条以纯黑实心条仿真(黑白屏没有红色,硬件 LED 是独立器件)。 */
+
+html.eink,
+html.eink body {
+  background: #888; /* 说明边距(画布外,不受纯黑白约束) */
+}
+
+html.eink body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.eink-frame {
+  text-align: center;
+}
+
+.eink-label {
+  color: #fff;
+  font-size: 14px;
+  margin: 8px 0;
+}
+
+.eink-label a {
+  color: #fff;
+}
+
+/* 竖向逻辑画布 300×400(A/B 一致,08 §6.3;4.2" 400×300 模组竖装的逻辑旋转) */
+.eink-canvas {
+  width: 300px;
+  height: 400px;
+  background: #fff;
+  border: 2px solid #000;
+  overflow: hidden; /* 禁滚动:超限由主机截断或端侧翻页,不出现网页滚动条 */
+  text-align: left;
+  font-size: 16px;
+}
+
+/* 画布内一律纯黑白,压掉一切灰阶/阴影/渐变/动画;
+   画布自身保持 content-box:逻辑画布尺寸指内容区,2px 边框仅为仿真外框 */
+.eink-canvas * {
+  box-sizing: border-box;
+  color: #000 !important;
+  background: #fff !important;
+  background-image: none !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+  border-radius: 0 !important;
+  animation: none !important;
+  transition: none !important;
+}
+
+.eink-canvas .view {
+  height: 100%;
+  min-height: 0; /* 压掉各 view 的 100vh,画布定高、溢出裁剪 */
+  padding: 8px;
+  gap: 8px;
+  justify-content: flex-start; /* 从顶部排布,溢出由画布裁剪并在截图中暴露 */
+}
+
+.eink-canvas h1 {
+  font-size: 20px;
+  margin: 4px 0;
+}
+
+.eink-canvas h2 {
+  font-size: 16px;
+  margin: 4px 0;
+}
+
+.eink-canvas .hint,
+.eink-canvas .notice {
+  font-size: 12px; /* 状态栏字号(显示契约 §6.3) */
+}
+
+.eink-canvas .rec-bar {
+  background: #000 !important; /* 纯黑实心条:红条语义由硬件独立 LED 承担 */
+  width: 100%;
+  height: 16px;
+}
+
+.eink-canvas .result {
+  padding-top: 32px; /* 结果/澄清页顶部留白,避免标题贴画布上沿 */
+}
+
+.eink-canvas button {
+  width: auto;
+  height: auto;
+  font-size: 16px;
+  padding: 8px 12px;
+  border: 2px solid #000 !important;
+  background: #fff !important;
+}
+
+.eink-canvas button:active {
+  background: #000 !important;
+  color: #fff !important;
+}
+
+/* 普通模式下的仿真模式入口 */
+.eink-entry {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  font-size: 12px;
+  color: #888;
+}
+
+.eink-entry.entry-b {
+  right: 64px;
+}
+
+/* ---------- 页面模型基础样式(A/B 共用,08 §6.1/§6.3) ---------- */
+/* 三段:状态栏 / 单页内容(超出截断,端侧不滚动)/ 按键提示行;字号阶梯 12/16/20 */
+
+.eink-canvas .paged {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.eink-canvas .p-status {
+  font-size: 12px;
+  line-height: 16px;
+  border-bottom: 1px solid #000;
+}
+
+.eink-canvas .p-content {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden; /* 单页截断:内容超限由主机按档处理(契约 §6.4),端侧不滚动 */
+  padding: 4px 0;
+}
+
+.eink-canvas .p-content h1 {
+  font-size: 20px;
+  margin: 4px 0;
+}
+
+.eink-canvas .p-content p,
+.eink-canvas .p-content li {
+  font-size: 16px;
+  line-height: 24px;
+  margin: 0;
+}
+
+.eink-canvas .p-content ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* A 档无卡身份页(契约 §6.1;二维码 ≤160×160) */
+.eink-canvas .p-content .idname {
+  font-size: 20px;
+  font-weight: bold;
+  line-height: 28px;
+}
+
+.eink-canvas .p-content .qr {
+  width: 120px;
+  height: 120px;
+  border: 2px solid #000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 8px;
+}
+
+.eink-canvas .p-hint {
+  display: flex;
+  gap: 8px;
+  border-top: 1px solid #000;
+  padding-top: 4px;
+}
+
+.eink-canvas .p-key {
+  font-size: 14px;
+  padding: 4px 10px;
+  border: 1px solid #000 !important;
+}
