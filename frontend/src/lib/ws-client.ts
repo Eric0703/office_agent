@@ -16,12 +16,13 @@ import { vibrate } from "./haptics";
 
 const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const MAX_RETRY_DELAY_MS = 15_000;
-const SHOW_RESULT_MS = 3_000; // 08 §1.1:结果展示 3s 回身份页
+const SHOW_RESULT_MS = 3_000; // 08 §6.1:成功结果 3s 自动返回;失败/未听清停留至点击返回
 
 export class WsClient {
   private ws: WebSocket | null = null;
   private retries = 0;
   private closedByUser = false;
+  private resultTimer: number | undefined;
 
   /** 建立连接;onopen 即发 device.hello(原型期 dev_mode 直通配对) */
   connect(): void {
@@ -104,9 +105,11 @@ export class WsClient {
       case "intent.result":
         connectionStore.lastResult = msg.payload;
         connectionStore.dispatch(DeviceEvent.IntentResult);
-        if (msg.payload.status !== "clarify") {
-          // 终态:展示 3s 回身份页;clarify 等端侧选择,不定时(登记册 §2.3)
-          setTimeout(() => {
+        window.clearTimeout(this.resultTimer);
+        if (msg.payload.status === "success") {
+          // 成功:展示 3s 自动返回原页面;clarify 等端侧选择;
+          // 失败/未听清:停留,由用户点击返回,不让提示一闪而过(08 §6.1)
+          this.resultTimer = window.setTimeout(() => {
             connectionStore.lastResult = null;
             connectionStore.dispatch(DeviceEvent.ShowTimeout);
           }, SHOW_RESULT_MS);

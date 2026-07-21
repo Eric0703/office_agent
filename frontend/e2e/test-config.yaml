@@ -1,0 +1,37 @@
+# Playwright 隔离测试环境配置:独立端口 8100 + 独立数据目录(frontend/.e2e-runtime)。
+# 不触碰 Owner 的 8000 服务、仓库根 config.yaml 与 data/agent.db;
+# 每次运行由 start-test-server.sh 重建,可安全重置。
+server:
+  host: "127.0.0.1"
+  port: 8100
+
+llm:
+  provider: "mock"
+
+asr:
+  provider: "faster-whisper"
+  model: "small"
+  # 匿名占位词表(与 config.example.yaml 对齐;真实词表只在 Owner 本机)
+  hotwords:
+    - "<业务系统名>"
+    - "<项目代号>"
+
+audio:
+  delete_after_transcribe: true   # 宪法第 3 条:转写完成即删
+  tmp_dir: "data/audio_tmp"
+
+briefing:
+  time: "08:30"
+
+security:
+  whitelist_commands:
+    - complete_task
+    - list_today_tasks
+    - create_task
+    - create_reminder
+
+store:
+  db_path: "data/agent.db"
+
+dev:
+  dev_mode: "auto_approve"        # 仅限原型/测试环境

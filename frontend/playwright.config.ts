@@ -8,21 +8,20 @@ export default defineConfig({
   timeout: 180_000,
   workers: 1, // 单实例:后端 SQLite 与录音处理为共享状态
   reporter: "list",
+  webServer: {
+    // 隔离测试服务:独立端口 8100 + 临时数据库(frontend/.e2e-runtime,每次重建);
+    // 不触碰 Owner 的 8000 服务与根 data/agent.db,不复用任何已在运行的服务
+    command: "bash e2e/start-test-server.sh",
+    url: "http://localhost:8100/health",
+    reuseExistingServer: false,
+    timeout: 60_000,
+  },
   use: {
-    baseURL: "http://localhost:8000",
+    baseURL: "http://localhost:8100",
     channel: "chrome",
     launchOptions: {
       args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
     },
     permissions: ["microphone"],
-  },
-  webServer: {
-    // 真实 agent-host serve(配置取仓库根 config.yaml,dev_mode=auto_approve);
-    // 先重置 mock 数据保证用例可重复;复用已在跑的服务(Owner 手动起服时)
-    command:
-      "cd .. && backend/.venv/bin/agent-host mock import >/dev/null && backend/.venv/bin/agent-host serve",
-    url: "http://localhost:8000/health",
-    reuseExistingServer: true,
-    timeout: 60_000,
   },
 });

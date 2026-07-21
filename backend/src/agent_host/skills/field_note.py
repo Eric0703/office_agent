@@ -1,7 +1,7 @@
 """现场记录:结构化笔记草稿、待确认队列、归档(FR-05)。
 
 宪法第 8 条:人工确认前产出物一律是草稿;草稿确认后才经 NotesAdapter 归档。
-原型期(Owner 决策)不接 LLM:模板 + 抽取式填充,草稿头部标注 "Mock 草稿"。
+原型期(Owner 决策)不接 LLM:模板 + 抽取式填充;草稿正文面向用户,不含内部术语。
 """
 
 import re
@@ -36,10 +36,7 @@ def _render(record_id: str, transcript: str) -> str:
     conclusions = _pick(sentences, _CONCLUSION_CUES)
     todos = _pick(sentences, _TODO_CUES)
     lines = [
-        "# 现场记录(Mock 草稿)",
-        "",
-        f"- 来源 record_id:{record_id}",
-        "- 生成方式:模板/抽取式(原型期无 LLM);人工确认前一律为草稿(宪法第 8 条)",
+        "# 现场记录",
         "",
         "## 背景",
         background,

@@ -7,14 +7,17 @@
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from sqlite3 import Row
 
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import BackgroundTasks, FastAPI, Request, WebSocket
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from agent_host.adapters.asr import FasterWhisperASR, MockASR
+from agent_host.adapters.asr import ASRAdapter, FasterWhisperASR, MockASR
 from agent_host.adapters.llm import create_llm_adapter
 from agent_host.adapters.task import MockTaskAdapter
 from agent_host.audio.pipeline import AudioPipeline
@@ -22,8 +25,10 @@ from agent_host.audit.logger import AuditEvent, AuditLogger
 from agent_host.config import AppConfig, load_config
 from agent_host.gateway.manager import ConnectionManager
 from agent_host.router.router import Intent, IntentKind, IntentRouter
+from agent_host.scheduler.jobs import reminder_loop
 from agent_host.skills.experience import ExperienceSkill
 from agent_host.skills.field_note import FieldNoteSkill
+from agent_host.skills.reminder import ReminderSkill
 from agent_host.skills.task_command import ExecutionResult, TaskCommandSkill
 from agent_host.store.db import init_db
 from agent_host.store.repos import (
@@ -43,44 +48,189 @@ FRONTEND_DIST = Path(__file__).resolve().parents[4] / "frontend" / "dist"
 LOW_CONFIDENCE_THRESHOLD = 0.5  # 原型阈值(avg exp(logprob) 经验值),调优留后续任务卡
 
 
-def create_app(config: AppConfig | None = None) -> FastAPI:
-    """装配 HTTP/WS 端点与处理管线;frontend/dist 存在时静态托管,不存在则跳过。"""
+def _desk_status(row: Row) -> str:
+    """records 行 → 工作台用户可读状态;error_code 等内部细节不出现在返回值。"""
+    status = row["status"]
+    if status in ("uploaded", "transcribed", "routed"):
+        return "处理中"
+    if status == "done":
+        return "已生成草稿" if row["intent"] in ("field_note", "experience") else "指令已执行"
+    if row["transcript"] is None:
+        return "转写失败"
+    if row["intent"] == "unknown":
+        return "未理解"
+    return "未听清"
+
+
+_LEGACY_DRAFT_MARKERS = ("- 来源 record_id:", "- 生成方式:")
+
+
+def _desk_draft_content(content_md: str) -> str:
+    """剔除历史草稿(修复前生成)里的内部标注行;仅展示层处理,数据库原文不动。"""
+    kept = [
+        line for line in content_md.splitlines() if not line.startswith(_LEGACY_DRAFT_MARKERS)
+    ]
+    return "\n".join(kept).replace("(Mock 草稿)", "")
+
+
+def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -> FastAPI:
+    """装配 HTTP/WS 端点与处理管线;frontend/dist 存在时静态托管,不存在则跳过。
+
+    asr 可注入(测试以 MockASR 固定文本走全管线);缺省按 config 装配,
+    faster-whisper 经 hotwords 传入本机业务词表(仅改善识别,不改变路由/确认语义)。
+    """
     config = config or load_config("config.yaml")
     conn = init_db(config.store.db_path)
     devices = DeviceRepo(conn)
     records = RecordRepo(conn)
     cards = CardRepo(conn)
     drafts = DraftRepo(conn)
+    tasks_repo = TaskRepo(conn)
     audit = AuditLogger(AuditRepo(conn))
 
-    asr = (
-        MockASR()
-        if config.asr.provider == "mock"
-        else FasterWhisperASR(model_size=config.asr.model or "small")
-    )
+    if asr is None:
+        asr = (
+            MockASR()
+            if config.asr.provider == "mock"
+            else FasterWhisperASR(
+                model_size=config.asr.model or "small", hotwords=config.asr.hotwords
+            )
+        )
     llm = create_llm_adapter(config.llm)  # 默认 mock;真实 provider 双闸门,未配置显式报错(规约 §4)
     router = IntentRouter(llm)
     field_notes = FieldNoteSkill(drafts)
     experience = ExperienceSkill(drafts)
-    task_commands = TaskCommandSkill(MockTaskAdapter(TaskRepo(conn)), cards)
+    reminders = ReminderSkill(cards, tasks_repo)
+    task_commands = TaskCommandSkill(MockTaskAdapter(tasks_repo), cards)
     manager = ConnectionManager(
         devices, cards, BriefingRepo(conn), dev_mode=config.dev.dev_mode
     )
     audio = AudioPipeline(asr, config.audio.tmp_dir, records, config.audio.delete_after_transcribe)
 
-    app = FastAPI(title="agent-host", version="0.2.0")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        # 提醒最小到点触发(08 §2;触发记录仅内存,重启后过期未撤卡会补触发一次)
+        scheduler_task = asyncio.create_task(reminder_loop(cards, manager.broadcast))
+        yield
+        scheduler_task.cancel()
+
+    app = FastAPI(title="agent-host", version="0.2.0", lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict[str, str]:
         return {"status": "ok"}
+
+    @app.get("/desk/records")
+    async def desk_records() -> list[dict[str, object]]:
+        """PC 草稿工作台:最近 20 条处理记录(只读,本机演示;不含内部编号/错误码)。"""
+        return [
+            {
+                "created_at": row["created_at"],
+                "status": _desk_status(row),
+                "transcript": row["transcript"],
+                "confidence": row["confidence"],
+            }
+            for row in records.list_recent(20)
+        ]
+
+    @app.get("/desk/drafts")
+    async def desk_drafts() -> list[dict[str, object]]:
+        """PC 草稿工作台:待确认草稿队列(只读;归档确认未实现,不提供写接口)。
+
+        历史草稿经 _desk_draft_content 剔除内部标注行后返回,数据库原文不动。
+        """
+        return [
+            {
+                "kind": row["kind"],
+                "created_at": row["created_at"],
+                "content_md": _desk_draft_content(row["content_md"]),
+                "status": row["status"],
+            }
+            for row in drafts.list_pending()
+        ]
+
+    @app.get("/desk/tasks")
+    async def desk_tasks() -> list[dict[str, object]]:
+        """PC 工作台:待办任务 + 定时提醒(只读;新建任务/提醒创建的可观察证据)。"""
+        items: list[dict[str, object]] = [
+            {
+                "id": row["id"],
+                "kind": "task",
+                "title": row["title"],
+                "time": row["due_at"],
+                "status": "已完成" if row["status"] == "done" else "未完成",
+                "created_at": row["created_at"],
+            }
+            for row in tasks_repo.list_all(50)
+        ]
+        items += [
+            {
+                "id": row["id"],
+                "kind": "timer",
+                "title": row["title"],
+                "time": row["remind_at"],
+                "status": "生效中" if row["status"] == "active" else "已撤下",
+                "created_at": row["created_at"],
+            }
+            for row in cards.list_by_kind("timer", 50)
+        ]
+        items.sort(key=lambda item: str(item["created_at"]), reverse=True)
+        return items[:50]
+
+    @app.post("/desk/tasks/{task_id}/complete")
+    async def desk_complete_task(task_id: str) -> JSONResponse:
+        """PWA/工作台勾选完成任务(FR-07 闭环):写 tasks.done、撤对应卡并广播 reminder.dismiss。"""
+        try:
+            result = task_commands.complete_by_id(task_id, f"pc-{task_id[:8]}")
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "task not found"})
+        for card_id in result.dismissed_card_ids:
+            await manager.broadcast("reminder.dismiss", {"card_id": card_id, "reason": "completed"})
+        audit.log(
+            AuditEvent(
+                device_id="pc-desk",
+                decision="executed",
+                intent="complete_task",
+                risk_level="L1",
+                tool="complete_task",
+                result=result.title,
+            )
+        )
+        return JSONResponse({"status": "ok", "title": result.title})
+
+    @app.post("/desk/reminders/{card_id}/cancel")
+    async def desk_cancel_reminder(card_id: str) -> JSONResponse:
+        """取消一次性定时提醒(触控/PC 路径):撤下 timer 卡并广播;语音取消本轮仍拒绝。"""
+        card = cards.get(card_id)
+        if card is None or card["status"] != "active":
+            return JSONResponse(status_code=404, content={"detail": "reminder not found"})
+        cards.dismiss(card_id, "cancelled")
+        await manager.broadcast("reminder.dismiss", {"card_id": card_id, "reason": "cancelled"})
+        audit.log(
+            AuditEvent(
+                device_id="pc-desk",
+                decision="cancelled",
+                intent="cancel_reminder",
+                risk_level="L1",
+                tool="cancel_reminder",
+                result=card["title"],
+            )
+        )
+        return JSONResponse({"status": "ok"})
 
     @app.websocket("/ws")
     async def control_channel(websocket: WebSocket) -> None:
         await manager.handle_connection(websocket)
 
     @app.post("/audio/{record_id}")
-    async def upload_audio(record_id: str, request: Request) -> JSONResponse:
-        """音频受理:登记 records 后后台异步处理,结果经 WS 回 intent.result。"""
+    async def upload_audio(
+        record_id: str, request: Request, background: BackgroundTasks
+    ) -> JSONResponse:
+        """音频受理:登记 records 后后台异步处理,结果经 WS 回 intent.result。
+
+        用 Starlette BackgroundTasks 而非裸 create_task:响应先回送,任务在
+        ASGI 周期内受控执行(TestClient 下可测,行为与 uvicorn 一致)。
+        """
         # 原型期 dev_mode:只校验头存在,token 校验留待正式配对照(后续任务卡)
         device_id = request.headers.get("x-device-id", "")
         if not device_id:
@@ -100,7 +250,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             data=body,
             fmt=request.headers.get("x-audio-format", "webm-opus"),
         )
-        asyncio.create_task(_process_record(record_id))
+        background.add_task(_process_record, record_id)
         return JSONResponse({"status": "received", "record_id": record_id})
 
     async def _process_record(record_id: str) -> None:
@@ -123,7 +273,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 {
                     "record_id": record_id,
                     "status": "failed",
-                    "title": "转写失败,请重说",
+                    "title": "未能识别,请在安静处重新录音",
                     "error_code": "ASR_FAILED",
                 },
             )
@@ -138,7 +288,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 {
                     "record_id": record_id,
                     "status": "low_confidence",
-                    "title": "没听清,请到安静处重说",
+                    "title": "没有听清,请重新录音",
                     "error_code": "ASR_LOW_CONFIDENCE",
                 },
             )
@@ -164,7 +314,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                     "record_id": record_id,
                     "status": "success",
                     "title": title,
-                    "body": "请到 PC 确认归档(宪法第 8 条)",
+                    "body": "请到电脑端查看待确认草稿",
                 },
             )
             audit.log(
@@ -201,7 +351,11 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
             )
 
     async def _run_task_command(device_id: str, record_id: str, intent: Intent) -> None:
-        result = task_commands.execute(intent, record_id)
+        if intent.command == "create_reminder":
+            # 一次性定时提醒:解析明确才直建,不确定经 clarify 确认,确认前不写入(FR-07)
+            result = reminders.execute(intent.entities.get("remind_query", ""), record_id)
+        else:
+            result = task_commands.execute(intent, record_id)
         await _push_execution_result(device_id, result)
         if result.status == "clarify":
             return  # 中间态:等 clarify.select,终态再审计
@@ -212,7 +366,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 decision="executed" if result.status == "success" else "failed",
                 record_id=record_id,
                 intent=intent.command,
-                risk_level="L1" if intent.command == "complete_task" else "L0",
+                risk_level="L1" if intent.command in ("complete_task", "create_reminder") else "L0",
                 tool=result.tool,
                 result=result.title,
             )
@@ -237,22 +391,43 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
                 device_id, "reminder.dismiss", {"card_id": card_id, "reason": "completed"}
             )
 
-    async def _on_clarify(device_id: str, record_id: str, candidate_id: str) -> None:
-        """clarify.select:candidate_id 即 task_id,执行并回终态(登记册 §2.3)。"""
-        try:
-            result = task_commands.complete_by_id(candidate_id, record_id)
-        except KeyError:
-            return
+    async def _on_clarify(
+        device_id: str, record_id: str, candidate_id: str, edited_labels: list[str] | None = None
+    ) -> None:
+        """clarify.select:任务候选(task_id)/提醒确认(remind:*)/多任务预览(task:*),回终态。"""
+        is_remind = candidate_id.startswith("remind:")
+        is_task_preview = candidate_id.startswith("task:")
+        if is_remind:
+            result = reminders.confirm_pending(record_id, candidate_id)
+        elif is_task_preview:
+            result = task_commands.confirm_create(record_id, candidate_id, edited_labels)
+        else:
+            try:
+                result = task_commands.complete_by_id(candidate_id, record_id)
+            except KeyError:
+                return
         await _push_execution_result(device_id, result)
         records.update_status(record_id, "done")
+        if candidate_id in ("remind:cancel", "task:cancel"):
+            decision = "cancelled"
+        elif is_remind or is_task_preview:
+            decision = "confirmed"
+        else:
+            decision = "executed"
+        if is_remind:
+            intent_label = "create_reminder"
+        elif is_task_preview:
+            intent_label = "create_task"
+        else:
+            intent_label = "complete_task"
         audit.log(
             AuditEvent(
                 device_id=device_id,
-                decision="executed",
+                decision=decision,
                 record_id=record_id,
-                intent="complete_task",
+                intent=intent_label,
                 risk_level="L1",
-                tool="complete_task",
+                tool=result.tool,
                 result=result.title,
             )
         )

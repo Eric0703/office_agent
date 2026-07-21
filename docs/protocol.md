@@ -158,7 +158,8 @@ Body 为原始音频字节。响应 JSON:
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `record_id` | string | 是 | 对应 intent.result 的 record_id |
-| `candidate_id` | string | 是 | |
+| `candidate_id` | string | 是 | 候选 id;任务消歧为 task_id,确认为 `remind:*` / `task:*` 前缀 |
+| `edited_labels` | array | 否 | 修订6 新增:多任务预览确认(`task:confirm_all`)时端侧编辑后的标题,与预览条目同序,≤5 条;旧字段兼容,接收方忽略未知字段 |
 
 选择后流程回到执行,结果仍走 `intent.result`。
 
@@ -195,7 +196,7 @@ Body 为原始音频字节。响应 JSON:
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
-| `card` | object | 是 | {`card_id`, `kind`: `task`\|`timer`, `title`, `body` 可空, `remind_at` 可空} |
+| `card` | object | 是 | {`card_id`, `kind`: `task`\|`timer`, `title`, `body` 可空, `remind_at` 可空, `ref_task_id` 可空(修订6 新增:task 卡关联任务 id,端侧勾选完成用)} |
 
 #### `reminder.dismiss` (H→D)
 
@@ -261,3 +262,5 @@ Body 为原始音频字节。响应 JSON:
 | 1.0(草案修订2) | 2026-07-20 | 硬件 v0.2 双方案(01 §5):device.hello 增加 `display_profile` 画布档位声明(400x300 / 296x128),显示契约改 A/B 两档(08 §6) |
 | 1.0(草案修订3) | 2026-07-20 | Owner 决策:工牌外形 60×90mm 竖向,模组与外形分离;页面模型改"默认提醒页+手动简报页",录音页静态化;`display_profile` 语义更新为模组档位 + 竖向逻辑画布 |
 | 1.0(草案修订4) | 2026-07-20 | Owner 决策:B 档仿真画布与 A 统一为 300×400 竖向(128×296 窄行宽多次折行,存在一屏显示不完风险);296×128 保留为 2.9" 模组物理参数与协议档位 |
+| 1.0(草案修订5) | 2026-07-21 | 新增白名单指令 create_reminder(一次性定时提醒,非周期 cron):解析不确定经 clarify 候选确认(`remind:confirm` / `remind:cancel`),确认前不写入;复用现有信封与消息,无格式变更 |
+| 1.0(草案修订6) | 2026-07-21 | 多任务可编辑预览:`clarify.select` 增加可选 `edited_labels`;card 结构增加可选 `ref_task_id`;候选 id 约定 `task:confirm_all` / `task:cancel`;均为兼容新增,旧端可忽略 |

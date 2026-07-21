@@ -28,10 +28,7 @@ def _render(record_id: str, transcript: str) -> tuple[str, str]:
     title = (sentences[0][:30] if sentences else "(无有效转写内容)") or "(无有效转写内容)"
     content_md = "\n".join(
         [
-            f"# {title}(Mock 草稿)",
-            "",
-            f"- 来源 record_id:{record_id}",
-            "- 生成方式:模板/抽取式(原型期无 LLM);人工确认前一律为草稿(宪法第 8 条)",
+            f"# {title}",
             "",
             "## 领域",
             "(待人工分类)",

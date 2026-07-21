@@ -8,7 +8,7 @@ import { connectionStore } from "../stores/connection";
   <section class="view">
     <h1>虚拟工牌</h1>
     <p class="name">张三</p>
-    <p class="dept">研发部(占位)</p>
+    <p class="dept">研发部</p>
     <div class="qr">二维码</div>
     <p class="status">{{ connectionStore.state === "pairing" ? "连接主机中…" : "未配对" }}</p>
   </section>

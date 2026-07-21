@@ -10,7 +10,12 @@ if (uiStore.eink !== "off") {
   document.documentElement.classList.add("eink", `eink-${uiStore.eink}`);
 }
 
+// PC 草稿工作台(?desk=1):只读页面,不建立工牌 WS 通道
+const isDesk = new URLSearchParams(window.location.search).has("desk");
+
 // 启动即连主机:hello 认证 → state.sync 恢复卡片(08 §1.1)
-wsClient.connect();
+if (!isDesk) {
+  wsClient.connect();
+}
 
 createApp(App).mount("#app");

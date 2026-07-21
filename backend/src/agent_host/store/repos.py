@@ -81,6 +81,12 @@ class RecordRepo:
         self._conn.execute("UPDATE records SET status = ? WHERE id = ?", (status, record_id))
         self._conn.commit()
 
+    def list_recent(self, limit: int = 20) -> list[sqlite3.Row]:
+        """最近处理记录(创建时间倒序),PC 草稿工作台只读查询。"""
+        return self._conn.execute(
+            "SELECT * FROM records ORDER BY created_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+
     def set_transcript(self, record_id: str, transcript: str, confidence: float) -> None:
         """写入转写文本与置信度;transcript 本地留存(宪法第 3 条)。"""
         self._conn.execute(
@@ -117,6 +123,12 @@ class TaskRepo:
         """全部 open 任务。"""
         return self._conn.execute(
             "SELECT * FROM tasks WHERE status = 'open' ORDER BY created_at"
+        ).fetchall()
+
+    def list_all(self, limit: int = 50) -> list[sqlite3.Row]:
+        """全部任务(创建时间倒序),PC 工作台只读查询。"""
+        return self._conn.execute(
+            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
         ).fetchall()
 
     def insert(
@@ -199,6 +211,21 @@ class CardRepo:
         return self._conn.execute(
             "SELECT * FROM cards WHERE ref_task_id = ? AND status = 'active'", (task_id,)
         ).fetchone()
+
+    def list_due_active(self, now_iso: str) -> list[sqlite3.Row]:
+        """到点未撤下的 timer 卡(remind_at <= now),调度器到期扫描用。"""
+        return self._conn.execute(
+            "SELECT * FROM cards WHERE status = 'active' AND kind = 'timer'"
+            " AND remind_at IS NOT NULL AND remind_at <= ? ORDER BY remind_at",
+            (now_iso,),
+        ).fetchall()
+
+    def list_by_kind(self, kind: str, limit: int = 50) -> list[sqlite3.Row]:
+        """按类型取卡片(创建时间倒序),PC 工作台只读查询。"""
+        return self._conn.execute(
+            "SELECT * FROM cards WHERE kind = ? ORDER BY created_at DESC LIMIT ?",
+            (kind, limit),
+        ).fetchall()
 
     def upsert(
         self,

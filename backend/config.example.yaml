@@ -17,6 +17,11 @@ asr:
   api_key: "REPLACE_ME"
   base_url: ""
   timeout_s: 60
+  # ASR 热词/业务词表(faster-whisper ≥1.1 原生支持):仅改善识别,不影响路由与确认;
+  # 真实词表只放本机 config.yaml,仓库只保留匿名占位示例
+  hotwords:
+    - "<业务系统名>"
+    - "<项目代号>"
 
 audio:
   delete_after_transcribe: true   # 宪法第 3 条:转写完成即删
@@ -30,6 +35,7 @@ security:
     - complete_task
     - list_today_tasks
     - create_task
+    - create_reminder         # 一次性定时提醒(Owner 决策 2026-07-21;周期任务不在范围)
 
 store:
   db_path: "data/agent.db"

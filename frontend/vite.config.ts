@@ -8,6 +8,13 @@ export default defineConfig({
     vue(),
     VitePWA({
       registerType: "autoUpdate",
+      // 发布即更新(验收阻断修复):新 SW 激活即接管并清理旧预缓存,
+      // 配合 autoUpdate 刷新页面,避免浏览器长期停留在旧 bundle
+      workbox: {
+        skipWaiting: true,
+        clientsClaim: true,
+        cleanupOutdatedCaches: true,
+      },
       manifest: {
         name: "虚拟工牌",
         short_name: "虚拟工牌",

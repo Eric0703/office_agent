@@ -3,13 +3,15 @@
  * 竖向逻辑画布(08 §6.3):A/B 统一 300×400;画布禁滚动,内容超限截断或翻页。
  * clarify/result 经真实管线驱动:以页面 device_id 上传 L1 TASK-001.wav,
  * Gate 0 语义下(ASR 同音误转写)稳定先出 clarify,点选后出"已完成"结果。
+ * 数据在隔离测试服务(8100 端口 + frontend/.e2e-runtime)内重置,不碰真实数据库。
  */
-import { execSync } from "node:child_process";
 import { mkdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { expect, test, type Page } from "@playwright/test";
+
+import { reseed } from "./seed";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS = path.resolve(HERE, "../../docs/assets");
@@ -33,8 +35,8 @@ async function expectCanvas(page: Page, width: number, height: number): Promise<
 
 test.beforeAll(() => {
   mkdirSync(ASSETS, { recursive: true });
-  // 重置演示数据:两张卡片 + 当日简报,任务全开(clarify 需两个候选)
-  execSync("cd .. && backend/.venv/bin/agent-host mock import", { stdio: "inherit" });
+  // 重置演示数据:两张卡片 + 当日简报,任务全开(clarify 需两个候选);仅影响隔离库
+  reseed();
 });
 
 test("电子纸仿真 A 档(300×400 竖向):identity/cards/recording/clarify/result 截图", async ({
@@ -44,7 +46,7 @@ test("电子纸仿真 A 档(300×400 竖向):identity/cards/recording/clarify/re
 }) => {
   // 1. 身份页:独立 context 中把 WS 挂起不连服务器(hello 无应答),保持配对中态
   const identityCtx = await browser.newContext({
-    baseURL: "http://localhost:8000",
+    baseURL: "http://localhost:8100",
     viewport: { width: 420, height: 560 },
   });
   const identityPage = await identityCtx.newPage();
@@ -60,11 +62,11 @@ test("电子纸仿真 A 档(300×400 竖向):identity/cards/recording/clarify/re
 
   await page.setViewportSize({ width: 420, height: 560 });
 
-  // 2. 卡片页:hello → state.sync(2 张卡 + 简报 = 3 页);默认页单卡,页码 1/3
-  //    排序:remind_at 最近优先——16:00 客户方案评审 < 18:00 周报撰写截止
+  // 2. 卡片页:hello → state.sync;默认页单卡,页码 1/N(N 随真实数据变化,不断言固定页数)
+  //    排序:remind_at 最近优先——mock 的"客户方案评审"(今天 16:00)应为第一页
   await page.goto("/?eink=a");
   await expectCanvas(page, 300, 400);
-  await expect(page.locator(".p-status")).toHaveText(/已连接 · 1\/3/, { timeout: 20_000 });
+  await expect(page.locator(".p-status")).toHaveText(/已连接 · 1\/\d+/, { timeout: 20_000 });
   await expect(page.locator(".p-content h1")).toHaveText("客户方案评审");
   await page.screenshot({ path: path.join(ASSETS, "eink-cards.png") });
 
@@ -106,25 +108,26 @@ test("电子纸仿真 B 档(300×400 竖向,布局同 A):cards/briefing/recordin
   page,
   request,
 }) => {
-  // 重置演示数据(A 档用例已完成周报撰写并撤卡,B 档需要完整 3 页)
-  execSync("cd .. && backend/.venv/bin/agent-host mock import", { stdio: "inherit" });
+  // 重置演示数据(A 档用例已完成周报撰写并撤卡,B 档需要完整页序列);仅影响隔离库
+  reseed();
   await page.setViewportSize({ width: 420, height: 560 });
 
-  // 1. 卡片页:一屏一卡,页码 1/3(卡 1 / 卡 2 / 简报页);
-  //    排序:remind_at 最近优先——16:00 客户方案评审 < 18:00 周报撰写截止
+  // 1. 卡片页:一屏一卡,页码 1/N;排序 remind_at 最近优先——"客户方案评审"(今天 16:00)第一页
   await page.goto("/?eink=b");
   await expectCanvas(page, 300, 400);
   const nextBtn = page.getByRole("button", { name: "翻页" });
-  await expect(page.locator(".p-status")).toHaveText(/已连接 · 1\/3/, { timeout: 20_000 });
+  await expect(page.locator(".p-status")).toHaveText(/已连接 · 1\/\d+/, { timeout: 20_000 });
   await expect(page.locator(".p-content h1")).toHaveText("客户方案评审");
   await page.screenshot({ path: path.join(ASSETS, "eink-b-cards.png") });
 
-  // 2. 简报页:确认键翻页到 3/3(底部提示行即翻页提示);2/3 为次优先卡
-  await nextBtn.click();
-  await expect(page.locator(".p-status")).toHaveText(/2\/3/);
-  await expect(page.locator(".p-content h1")).toHaveText("周报撰写截止");
-  await nextBtn.click();
-  await expect(page.locator(".p-status")).toHaveText(/3\/3/);
+  // 2. 简报页:翻页直到"简报"(页数随真实数据变化,上限保护)
+  for (let i = 0; i < 6; i++) {
+    if ((await page.locator(".p-content h1").textContent()) === "简报") {
+      break;
+    }
+    await nextBtn.click();
+  }
+  await expect(page.locator(".p-content h1")).toHaveText("简报");
   await expect(page.locator(".p-content li")).toHaveCount(3);
   await page.screenshot({ path: path.join(ASSETS, "eink-b-briefing.png") });
 

@@ -22,6 +22,7 @@ node_modules/
 dist/
 test-results/
 playwright-report/
+.e2e-runtime/
 
 # 运行时数据(08 §4:保留目录结构与 .gitkeep,内容不入库)
 data/*

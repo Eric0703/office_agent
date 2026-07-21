@@ -17,7 +17,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 from agent_host.gateway.envelope import make_envelope
 from agent_host.store.repos import BriefingRepo, CardRepo, DeviceRepo
 
-ClarifyHandler = Callable[[str, str, str], Awaitable[None]]
+ClarifyHandler = Callable[[str, str, str, "list[str] | None"], Awaitable[None]]
 
 
 def _now_ms() -> int:
@@ -117,8 +117,12 @@ class ConnectionManager:
         elif msg_type == "clarify.select":
             await self._ack(device_id, msg)
             if self.clarify_handler is not None:
+                # edited_labels 为可选新增字段(登记册修订6;多任务预览编辑确认)
                 await self.clarify_handler(
-                    device_id, payload.get("record_id", ""), payload.get("candidate_id", "")
+                    device_id,
+                    payload.get("record_id", ""),
+                    payload.get("candidate_id", ""),
+                    payload.get("edited_labels"),
                 )
         elif msg_type in ("card.ack", "confirm.response"):
             await self._ack(device_id, msg)
@@ -128,6 +132,11 @@ class ConnectionManager:
         """向在线设备下发消息;离线则跳过(原型期无离线队列,重连走 state.sync)。"""
         websocket = self._conns.get(device_id)
         if websocket is not None:
+            await self._send(websocket, msg_type, payload)
+
+    async def broadcast(self, msg_type: str, payload: dict[str, Any]) -> None:
+        """向全部在线设备下发(提醒到点触发等;原型期单用户,重连恢复仍走 state.sync)。"""
+        for websocket in list(self._conns.values()):
             await self._send(websocket, msg_type, payload)
 
     async def push_state_sync(self, device_id: str) -> None:
@@ -140,6 +149,7 @@ class ConnectionManager:
                     "title": r["title"],
                     "body": r["body"],
                     "remind_at": r["remind_at"],
+                    "ref_task_id": r["ref_task_id"],
                 }
                 for r in self._cards.list_active()
             ]

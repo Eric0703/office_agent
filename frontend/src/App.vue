@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// 壳:按端侧状态机切换四个 view(08 §1.1/§2;电子纸风格:灰白底、黑字)
+// 壳:?desk=1 → PC 草稿工作台(只读,不连 WS);否则按端侧状态机切换四个 view(08 §1.1/§2)
 // ?eink=a|b:电子纸仿真两档(08 §6);B 档无身份页(身份由实体工卡承担)
 import { computed } from "vue";
 
@@ -7,9 +7,11 @@ import { connectionStore } from "./stores/connection";
 import { uiStore } from "./stores/ui";
 import CardsView from "./views/CardsView.vue";
 import ConfirmView from "./views/ConfirmView.vue";
+import DeskView from "./views/DeskView.vue";
 import IdentityView from "./views/IdentityView.vue";
 import RecordingView from "./views/RecordingView.vue";
 
+const isDesk = new URLSearchParams(window.location.search).has("desk");
 const isB = computed(() => uiStore.eink === "b");
 
 const currentView = computed(() => {
@@ -37,7 +39,8 @@ const frameLabel = computed(() =>
 </script>
 
 <template>
-  <div v-if="uiStore.eink !== 'off'" class="eink-frame">
+  <DeskView v-if="isDesk" />
+  <div v-else-if="uiStore.eink !== 'off'" class="eink-frame">
     <p class="eink-label">
       {{ frameLabel }} · <a href="?eink=a">A</a> / <a href="?eink=b">B</a> /
       <a href="/">关闭</a>

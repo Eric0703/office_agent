@@ -30,6 +30,8 @@ class ProviderConfig:
     api_key_env: str = "LLM_API_KEY"  # Key 所在环境变量名;config.yaml 禁写真实 Key
     timeout_s: int = 30
     allow_external: bool = False  # 宪法第 3 条例外开关,仅对 LLM 有意义
+    # ASR 热词/业务词表(仅 ASR 使用;真实词表只在 Owner 本机 config.yaml,不提交)
+    hotwords: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)

@@ -128,6 +128,8 @@ export interface IntentResultPayload {
 export interface ClarifySelectPayload {
   record_id: string;
   candidate_id: string;
+  /** 可选新增(修订6):多任务预览确认时端侧编辑后的标题列表,与预览条目同序,≤5 条 */
+  edited_labels?: string[];
 }
 
 /** confirm.request (H→D) — L2 风险确认(宪法第 5 条) */
@@ -162,6 +164,8 @@ export interface Card {
   title: string;
   body?: string | null;
   remind_at?: string | null;
+  /** 可选新增(修订6):task 卡关联的任务 id;端侧勾选完成时回传给完成接口 */
+  ref_task_id?: string | null;
 }
 
 /** 简报条目;kind ∈ event/task/conflict,顺序即展示顺序,≤5 条 */

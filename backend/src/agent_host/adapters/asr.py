@@ -37,14 +37,23 @@ class MockASR:
 
 
 class FasterWhisperASR:
-    """faster-whisper 本地实现:懒加载 small,CPU int8;webm/opus 由 PyAV 解码。"""
+    """faster-whisper 本地实现:懒加载 small,CPU int8;webm/opus 由 PyAV 解码。
+
+    hotwords(faster-whisper ≥1.1 原生支持):业务词表,仅改善识别,
+    不改变路由与写操作的参数校验/确认语义(Owner 指令:不得借热词扩大误触)。
+    """
 
     def __init__(
-        self, model_size: str = "small", device: str = "cpu", compute_type: str = "int8"
+        self,
+        model_size: str = "small",
+        device: str = "cpu",
+        compute_type: str = "int8",
+        hotwords: list[str] | None = None,
     ) -> None:
         self._model_size = model_size
         self._device = device
         self._compute_type = compute_type
+        self._hotwords = "、".join(hotwords) if hotwords else None
         self._model: WhisperModel | None = None
 
     def _load(self) -> WhisperModel:
@@ -59,13 +68,15 @@ class FasterWhisperASR:
 
     def transcribe(self, audio_path: str) -> tuple[str, float]:
         """转写并返回 (拼接文本, 平均置信度);置信度由分段 avg_logprob 取 exp 估算。"""
-        segments, _info = self._load().transcribe(
-            audio_path,
-            language="zh",
-            initial_prompt=_ZH_INITIAL_PROMPT,
-            beam_size=5,
-            vad_filter=False,
-        )
+        kwargs: dict[str, object] = {
+            "language": "zh",
+            "initial_prompt": _ZH_INITIAL_PROMPT,
+            "beam_size": 5,
+            "vad_filter": False,
+        }
+        if self._hotwords:
+            kwargs["hotwords"] = self._hotwords
+        segments, _info = self._load().transcribe(audio_path, **kwargs)  # type: ignore[call-arg]
         parts: list[str] = []
         conf_sum = 0.0
         conf_n = 0

@@ -29,6 +29,16 @@ LIST_CUES = (
     "哪些任务", "还有什么任务", "今天的任务", "今日任务", "待办",
 )
 EXPERIENCE_CUES = ("教训", "根因", "复盘", "经验", "以后任何", "以后要", "切记")
+# 一次性定时提醒(Owner 决策 2026-07-21:"定时任务"=可取消定时提醒,非周期 cron);
+# 解析与确认在 skills.reminder,路由只产出指令名与原文
+REMIND_CUES = ("提醒我", "定时提醒", "定时任务", "提醒")
+# 口语并列待办弱线索(2026-07-21):并列词 + 动作动词才按多任务猜,且一律经预览确认;
+# 常数放本模块,task_command 复用(避免循环导入)
+TODO_VERBS = (
+    "准备", "整理", "写", "发送", "提交", "回复", "完成", "处理", "买",
+    "订", "联系", "安排", "打印", "修改", "做", "交", "发", "看", "学习", "弄",
+)
+MULTI_MARKERS = ("另外", "还有", "再就是", "还要", "也要")
 
 _DUE_RE = re.compile(r"^(明天|今天|后天|下周\S{0,2}?)(?:之前|以前|前)(?P<rest>.+)$")
 
@@ -118,6 +128,17 @@ class IntentRouter:
                 command="complete_task",
                 entities={"task_title": _extract_complete_title(text)},
             )
+        # 提醒类优先于新建:"创建一个定时任务"是定时提醒而非普通任务(Owner 决策)
+        if "提醒" in text and "取消" in text:
+            # 取消提醒不在本轮范围:明确拒绝,不得被提醒创建吞掉(不产生任何写入)
+            return Intent(kind=IntentKind.TASK_COMMAND, confidence=0.9, command="cancel_reminder")
+        if any(cue in text for cue in REMIND_CUES):
+            return Intent(
+                kind=IntentKind.TASK_COMMAND,
+                confidence=0.9,
+                command="create_reminder",
+                entities={"remind_query": text},
+            )
         if any(cue in text for cue in CREATE_CUES):
             entities = _extract_create(text)
             return Intent(
@@ -129,5 +150,14 @@ class IntentRouter:
         if any(cue in text for cue in LIST_CUES):
             return Intent(
                 kind=IntentKind.TASK_COMMAND, confidence=0.9, command="list_today_tasks"
+            )
+        # 口语并列待办(无显式创建动词):并列词+动作动词才按多任务猜,
+        # 一律经预览确认(needs_confirm);纯陈述不受影响,兜底仍走现场记录
+        if any(m in text for m in MULTI_MARKERS) and any(v in text for v in TODO_VERBS):
+            return Intent(
+                kind=IntentKind.TASK_COMMAND,
+                confidence=0.6,
+                command="create_task",
+                entities={"task_title": text, "needs_confirm": True},
             )
         return None
