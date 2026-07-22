@@ -22,6 +22,8 @@ asr:
   hotwords:
     - "<业务系统名>"
     - "<项目代号>"
+  # 置信度阈值:低于即提示"没有听清"(FR-03),不强行进入指令执行
+  low_confidence_threshold: 0.5
 
 audio:
   delete_after_transcribe: true   # 宪法第 3 条:转写完成即删

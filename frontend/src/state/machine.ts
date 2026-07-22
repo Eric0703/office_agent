@@ -83,6 +83,11 @@ const TRANSITIONS: Readonly<Record<DeviceState, Readonly<Partial<Record<DeviceEv
     },
     [DeviceState.Uploading]: {
       [DeviceEvent.UploadDone]: DeviceState.Processing,
+      // intent.result / confirm.request 可能先于 HTTP 200 到达(WS 先于响应):
+      // 两种顺序必须收敛到同一终态——先到则直出 Showing/ConfirmWait,
+      // 后到的 UploadDone 在这些状态无迁移、被忽略,不得覆盖(A1-2 时序修复)
+      [DeviceEvent.IntentResult]: DeviceState.Showing,
+      [DeviceEvent.ConfirmRequest]: DeviceState.ConfirmWait,
       [DeviceEvent.ConnectionLost]: DeviceState.OfflineCached,
       [DeviceEvent.UploadRejected]: DeviceState.Idle,
     },

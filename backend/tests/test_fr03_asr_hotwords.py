@@ -65,6 +65,14 @@ def test_fr03_no_hotwords_no_param(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "hotwords" not in fake.kwargs
 
 
+def test_fr03_low_confidence_threshold_from_config(tmp_path: Path) -> None:
+    """置信度阈值走配置(FR-03):asr.low_confidence_threshold 载入,缺省 0.5。"""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("asr:\n  low_confidence_threshold: 0.35\n", encoding="utf-8")
+    assert load_config(cfg_file).asr.low_confidence_threshold == 0.35
+    assert load_config(tmp_path / "missing.yaml").asr.low_confidence_threshold == 0.5
+
+
 @pytest.mark.slow
 def test_fr03_hotwords_no_regression_on_clean_l1() -> None:
     """真机无退化:带热词转写 L1 clean 音频,基准识别不得劣化(不验证 WorkBuddy 本身——

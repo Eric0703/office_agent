@@ -1,7 +1,28 @@
 # 项目进展记录(供恢复会话使用)
 
-> 最新状态:**Gate 0 阻断修复(两轮)已实施,待 Owner 按"Gate 0 待验收清单"验收;验收通过前,任何人(含 AI)不得声称 Gate 0 已通过**。
+> 最新状态:**Gate 0 已通过(基线 335e4ef);A1-1 设备接入通过(基线 ed2fecf);A1-2 音频管线已实施(离线补传/错误分级/终态出队/duplicate 恢复/P1 时序),全部测试绿,待 Owner 验收,未提交**。
+> 下一步:A1-2 验收后提交基线,继续 A1-3(意图路由 LLM 分类 + 规则兜底,FR-04)。
 > 下次恢复时对 AI 说:"读 PROGRESS.md 和 docs/ 规约,我们继续",即可无缝接续。
+
+## 2026-07-22(A1 开工):产品方向与 A1-2 离线补传
+
+### 产品方向(Owner 决策,2026-07-22)
+
+**方案 B 确认**:正面实体工卡展示身份(姓名/部门/二维码),背面电子纸只显示动态内容(提醒/简报/结果)。后续涉及身份页/显示契约的改动以此为准(A 档"无卡身份页"将在后续任务卡重评,不在 A1-2 范围)。
+
+### A1-2 音频管线与置信度低路径(完成,待验收)
+
+- **离线缓存自动补传(FR-02)**:上传网络失败或 5xx → 音频入端侧 IndexedDB 队列(`lib/pending-audio.ts`,record_id 幂等,服务端 duplicate 去重)→ "已离线缓存"提示 → `forceReconnect` 主动断开假死连接 → 退避重连 → hello 认证 + state.sync → `onRestored` 钩子自动补传 → 结果仍走 intent.result。
+- **错误分级与恢复(2026-07-22 补)**:
+  - 一切上传先入 IndexedDB 恢复凭据(record_id 幂等),**仅终态 intent.result(success/failed/low_confidence)到达才出队**;受理(200)后页面关闭/断连,重开经 duplicate 补推恢复;clarify/pending_confirm 中间态凭据保留,放弃后亦可经补推回到同一中间态;
+  - 5xx/网络错误:自动退避重试(2s/5s/10s,用尽则保留队列等下次重连);4xx 永久拒绝:即时移除并提示;
+  - 补推前归属校验(跨设备不可读);缓存淘汰/服务重启按 records 终态合成通用结果("已处理完成,请到电脑端查看详情");
+  - 60s 弱网验收负载与 ASR 解耦(不可解码负载快进失败);门控 e2e 改假 WS 主机,消除真实 ASR 时序依赖,连续两轮全量稳定。
+- **P1 时序修复(2026-07-22,验收发现)**:WS intent.result 先于 HTTP 200 到达时(如 duplicate 补推),状态机 uploading 无 IntentResult 迁移——事件被忽略、凭据已删、UploadDone 把状态推进 processing 卡死。修复:状态机补 uploading → IntentResult → Showing / ConfirmRequest → ConfirmWait 两条迁移,两种到达顺序收敛同一终态;晚到 UploadDone 在 Showing/ConfirmWait 无迁移不得覆盖。e2e `result-ordering.spec.ts` 确定性回归(WS 先送、≥500ms 后回 200):终态先到结果页在 200 前可见不停 processing、clarify 先到候选可见且凭据保留至最终终态;连续两轮 18/18。
+- **置信度阈值配置化(FR-03)**:`asr.low_confidence_threshold`(默认 0.5)。
+- **验收实测**:60 秒静音 WAV(≈1.87MB)在 100KB/s 限速下补传成功(19.4s,FR-02 口径);503 两次后自动退避重试成功;duplicate 补推全链路通过。
+- 测试:后端 `test_fr02_offline_retry.py`(duplicate 补推);e2e `offline-audio.spec.ts` 3 条(断网补传/503 退避/限速验收);全量后端 71 passed、e2e 13/13。
+- 假死连接场景:Playwright setOffline 等环境断网时 WS 不自动关闭,`forceReconnect` 主动断开以触发重连(真实离线同样更及时)。
 
 ## 2026-07-21(五):Gate 0 通过 + A1-1 正式配对落地
 

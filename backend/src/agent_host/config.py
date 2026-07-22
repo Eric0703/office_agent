@@ -32,6 +32,8 @@ class ProviderConfig:
     allow_external: bool = False  # 宪法第 3 条例外开关,仅对 LLM 有意义
     # ASR 热词/业务词表(仅 ASR 使用;真实词表只在 Owner 本机 config.yaml,不提交)
     hotwords: list[str] = field(default_factory=list)
+    # ASR 置信度阈值(仅 ASR 使用):低于即"未听清"不强行进入指令执行(FR-03)
+    low_confidence_threshold: float = 0.5
 
 
 @dataclass(frozen=True)

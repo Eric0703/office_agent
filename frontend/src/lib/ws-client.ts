@@ -13,11 +13,14 @@ import { cardsStore } from "../stores/cards";
 import { connectionStore } from "../stores/connection";
 import { displayProfile } from "../stores/ui";
 import { vibrate } from "./haptics";
+import { remove as removePendingAudio } from "./pending-audio";
 
 const WS_URL = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
 const MAX_RETRY_DELAY_MS = 15_000;
 const SHOW_RESULT_MS = 3_000; // 08 §6.1:成功结果 3s 自动返回;失败/未听清停留至点击返回
 const HEARTBEAT_INTERVAL_MS = 30_000; // 登记册 §2.1:30s 间隔,连续 2 次未达即断连
+/** 终态状态集:仅这些 intent.result 允许出队恢复凭据;clarify/pending_confirm 为中间态 */
+const TERMINAL_STATUSES = new Set(["success", "failed", "low_confidence"]);
 
 export class WsClient {
   private ws: WebSocket | null = null;
@@ -28,6 +31,13 @@ export class WsClient {
   private reconnectTimer: number | undefined;
   /** 配对模式:连接首条消息发 device.pair.request 而非 hello(登记册 §2.1) */
   private pairing = false;
+  /** 重连成功(hello ok + state.sync)钩子:离线音频补传等 */
+  private restoredHooks: Array<() => void> = [];
+
+  /** 注册重连成功钩子(模块加载期调用一次) */
+  onRestored(cb: () => void): void {
+    this.restoredHooks.push(cb);
+  }
 
   /** 建立连接;onopen 按模式发 device.hello 或 device.pair.request */
   connect(): void {
@@ -90,6 +100,12 @@ export class WsClient {
     window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = undefined;
     this.closeSilently();
+  }
+
+  /** 网络层失败判定连接已死(如音频上传失败):主动断开,由 onclose 退避重连(08 §1.1)。
+   *  用于假死场景——部分环境(如模拟器/代理)网络断开时 WS 不会自动关闭。 */
+  forceReconnect(): void {
+    this.ws?.close();
   }
 
   /** 静默关闭当前连接:先摘除全部回调,杜绝旧 onclose 迟发再次触发重连(竞态修复) */
@@ -170,6 +186,10 @@ export class WsClient {
           connectionStore.dispatch(DeviceEvent.ConnectionRestored);
           // 认证成功(重连后服务端随即发 state.sync):启动 30s 心跳
           this.startHeartbeat();
+          // 重连成功钩子(离线音频自动补传等,08 §1.1)
+          for (const cb of this.restoredHooks) {
+            cb();
+          }
         } else if (msg.payload.status === "pair_required") {
           // 未配对:生成 6 位配对码,重连后改发 device.pair.request(登记册 §2.1)
           this.pairing = true;
@@ -218,6 +238,11 @@ export class WsClient {
       case "intent.result":
         connectionStore.lastResult = msg.payload;
         connectionStore.dispatch(DeviceEvent.IntentResult);
+        // 仅终态(success/failed/low_confidence)出队恢复凭据;clarify/pending_confirm
+        // 是中间态,凭据保留——放弃/断线后经 duplicate 补推可回到同一中间态(A1-2)
+        if (TERMINAL_STATUSES.has(msg.payload.status)) {
+          void removePendingAudio(msg.payload.record_id);
+        }
         window.clearTimeout(this.resultTimer);
         if (msg.payload.status === "success") {
           // 成功:展示 3s 自动返回原页面;clarify 等端侧选择;

@@ -46,7 +46,6 @@ logger = logging.getLogger(__name__)
 
 MAX_AUDIO_BYTES = 20 * 1024 * 1024  # 登记册 §2.2:上限 20MB,超限 413
 FRONTEND_DIST = Path(__file__).resolve().parents[4] / "frontend" / "dist"
-LOW_CONFIDENCE_THRESHOLD = 0.5  # 原型阈值(avg exp(logprob) 经验值),调优留后续任务卡
 
 
 def _desk_status(row: Row) -> str:
@@ -64,6 +63,24 @@ def _desk_status(row: Row) -> str:
 
 
 _LEGACY_DRAFT_MARKERS = ("- 来源 record_id:", "- 生成方式:")
+
+
+def _synthesize_result(row: Row) -> dict[str, object]:
+    """records 终态行 → 通用 intent.result(结果缓存淘汰或服务重启后的降级恢复:
+    精确标题不可重建时,给出不撒谎的通用终态,详情引导到电脑端查看)。"""
+    if row["status"] == "done":
+        return {
+            "record_id": row["id"],
+            "status": "success",
+            "title": "已处理完成",
+            "body": "请到电脑端查看详情",
+        }
+    return {
+        "record_id": row["id"],
+        "status": "failed",
+        "title": "处理未成功,请重新录音",
+        "error_code": "INTERNAL",
+    }
 
 
 def _desk_draft_content(content_md: str) -> str:
@@ -107,6 +124,22 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
         devices, cards, BriefingRepo(conn), dev_mode=config.dev.dev_mode
     )
     audio = AudioPipeline(asr, config.audio.tmp_dir, records, config.audio.delete_after_transcribe)
+
+    result_cache: dict[str, dict[str, object]] = {}  # record_id → intent.result 负载(内存,≤200 条)
+
+    def cache_result(payload: dict[str, object]) -> None:
+        """缓存 intent.result,供 duplicate 补推(A1-2:已受理但响应/推送在断线中丢失的恢复)。"""
+        record_id = str(payload.get("record_id", ""))
+        if not record_id:
+            return
+        if len(result_cache) >= 200:
+            result_cache.pop(next(iter(result_cache)))
+        result_cache[record_id] = payload
+
+    async def push_result(device_id: str, payload: dict[str, object]) -> None:
+        """intent.result 统一出口:先缓存后推送;进程内重启丢失,重连仍走 state.sync。"""
+        cache_result(payload)
+        await manager.push(device_id, "intent.result", payload)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -266,8 +299,18 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
         body = await request.body()
         if len(body) > MAX_AUDIO_BYTES:
             return JSONResponse(status_code=413, content={"detail": "audio too large"})
-        if records.get(record_id) is not None:
-            # 幂等:同 record_id 重传返回首次受理结果(登记册 §2.2)
+        existing = records.get(record_id)
+        if existing is not None:
+            # 幂等:同 record_id 重传返回首次受理结果(登记册 §2.2);
+            # 归属校验(A1-2):仅向 records 所属设备补推,其他配对设备不得跨设备读取结果;
+            # 已有终态:缓存补推;缓存淘汰/重启:按 records 终态合成通用结果;
+            # 处理中:不推(原任务终态推送)
+            if existing["device_id"] == device_id:
+                cached = result_cache.get(record_id)
+                if cached is not None:
+                    await manager.push(device_id, "intent.result", cached)
+                elif existing["status"] in ("done", "failed"):
+                    await manager.push(device_id, "intent.result", _synthesize_result(existing))
             return JSONResponse({"status": "duplicate", "record_id": record_id})
         audio.save_upload(
             record_id=record_id,
@@ -295,9 +338,8 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             logger.exception("ASR 转写失败 record_id=%s", record_id)
             audio.cleanup(record_id)  # 失败同样删除原始音频(宪法第 3 条)
             records.update_status(record_id, "failed")
-            await manager.push(
+            await push_result(
                 device_id,
-                "intent.result",
                 {
                     "record_id": record_id,
                     "status": "failed",
@@ -308,11 +350,10 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             return
         audio.cleanup(record_id)  # 转写成功后立即删除原始音频(宪法第 3 条)
         records.set_transcript(record_id, text, confidence)
-        if confidence < LOW_CONFIDENCE_THRESHOLD:
+        if confidence < config.asr.low_confidence_threshold:
             records.update_status(record_id, "failed")
-            await manager.push(
+            await push_result(
                 device_id,
-                "intent.result",
                 {
                     "record_id": record_id,
                     "status": "low_confidence",
@@ -335,9 +376,8 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
                 experience.process(record_id, text)
                 title = "经验卡片草稿已生成"
             records.update_status(record_id, "done")
-            await manager.push(
+            await push_result(
                 device_id,
-                "intent.result",
                 {
                     "record_id": record_id,
                     "status": "success",
@@ -358,9 +398,8 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             )
         else:  # unknown:不猜测执行(08 §1.2)
             records.update_status(record_id, "failed")
-            await manager.push(
+            await push_result(
                 device_id,
-                "intent.result",
                 {
                     "record_id": record_id,
                     "status": "failed",
@@ -412,7 +451,7 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             payload["candidates"] = list(result.candidates)
         if result.error_code:
             payload["error_code"] = result.error_code
-        await manager.push(device_id, "intent.result", payload)
+        await push_result(device_id, payload)
         for card_id in result.dismissed_card_ids:
             # "说完即消"(08 §1.3):语音完成任务 → 撤下对应卡片
             await manager.push(
