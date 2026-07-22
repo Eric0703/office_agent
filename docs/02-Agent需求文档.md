@@ -97,6 +97,7 @@ Agent 软件是本项目价值的核心载体,硬件只是它的感知/呈现终
 - 虚拟工牌首次访问时展示配对码,PC 端确认后建立绑定(token 持久化)
 - 心跳与断线自动重连;连接状态在虚拟工牌常显
 - PC 端可一键吊销,吊销后设备仅显示"请重新配对"
+- 实现状态(A1-1,2026-07-21):正式配对已落地——端侧展示 6 位配对码,`agent-host pair approve <code>`(经本机 desk 接口)签发 device_id + token;hello 校验 token 哈希;`agent-host pair revoke <device_id>` 吊销即时失效并推送 device.revoke;音频上传正式模式校验 X-Token。`dev_mode=auto_approve` 保留为原型/测试旁路,正式部署必须关闭
 
 **验收**:断网 30 秒恢复后自动重连并 `state.sync`;吊销后旧 token 立即失效。
 

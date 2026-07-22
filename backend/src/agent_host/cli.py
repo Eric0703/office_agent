@@ -95,8 +95,39 @@ def _mock_import() -> int:
     return 0
 
 
+def _pair_command(pair_command: str, target: str) -> int:
+    """配对管理:经本机 desk 接口作用于正在运行的服务(单一事实源,免跨进程状态)。
+
+    approve:批准端侧展示的 6 位配对码;revoke:吊销设备,token 立即失效(FR-01)。
+    """
+    import json
+    import urllib.error
+    import urllib.request
+
+    config = load_config("config.yaml")
+    base = f"http://127.0.0.1:{config.server.port}"
+    path = "/desk/pair/approve" if pair_command == "approve" else "/desk/pair/revoke"
+    field = "code" if pair_command == "approve" else "device_id"
+    req = urllib.request.Request(
+        base + path,
+        data=json.dumps({field: target}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            print(f"pair {pair_command} {target}:{resp.read().decode()}")
+            return 0
+    except urllib.error.HTTPError as exc:
+        print(f"pair {pair_command} {target} 失败:{exc.read().decode()}")
+        return 1
+    except urllib.error.URLError:
+        print(f"无法连接本机服务({base}),请先启动 agent-host serve")
+        return 1
+
+
 def main(argv: list[str] | None = None) -> int:
-    """CLI 入口;骨架阶段 pair 只打印占位信息。"""
+    """CLI 入口。"""
     args = build_parser().parse_args(argv)
 
     if args.command == "serve":
@@ -107,8 +138,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "pair":
         target = args.pair_code if args.pair_command == "approve" else args.device_id
-        print(f"[占位] pair {args.pair_command} {target}:正式配对流程后续任务卡实现")
-        return 0
+        return _pair_command(args.pair_command, target)
 
     if args.command == "mock":
         return _mock_import()

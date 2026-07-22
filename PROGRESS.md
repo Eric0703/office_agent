@@ -3,6 +3,14 @@
 > 最新状态:**Gate 0 阻断修复(两轮)已实施,待 Owner 按"Gate 0 待验收清单"验收;验收通过前,任何人(含 AI)不得声称 Gate 0 已通过**。
 > 下次恢复时对 AI 说:"读 PROGRESS.md 和 docs/ 规约,我们继续",即可无缝接续。
 
+## 2026-07-21(五):Gate 0 通过 + A1-1 正式配对落地
+
+- **Git 基线**:`335e4ef` 已推 origin/main(Gate 0 验收通过;41 文件,无配置/数据/产物入库)。
+- **A1-1 设备接入(FR-01)**:正式配对闭环——pair.request(6 位码,5 分钟一次性)挂起 → `agent-host pair approve <code>`(经本机 `POST /desk/pair/approve`,单一事实源)签发 device_id + token(devices 只存哈希)→ 端侧持久化后 hello 认证进入 idle;hello 正式模式校验 token 哈希(pair_required/auth_failed/revoked 三态);`agent-host pair revoke <device_id>` 吊销即时失效并向在线设备推送 device.revoke;音频上传正式模式校验 X-Token(dev_mode=auto_approve 为原型/测试旁路,正式部署必须关闭)。
+- 前端:身份页展示配对码与等待提示;pair.result 批准后自动持久化并重连;revoked/auth_failed 清除身份回未配对页。
+- 测试:`test_fr01_pairing.py` 8 条(hello 三态/完整配对/吊销即时失效/上传 token 校验/过期码/非法码/吊销推送),TestClient WebSocket 全流程;后端全量 `pytest --runslow` **78 passed**;前端 typecheck/lint/build 通过;Playwright **6/6**(隔离环境)。
+- 限制:配对挂起状态在内存(进程重启后需重新发码);Owner 当前 config.yaml 仍为 auto_approve(正式配对体验需移除该节并重启);A1-1 验收以后端测试为准,正式配对的浏览器 e2e 未单列。
+
 ## 2026-07-21(四):验收阻断修复(typecheck/PWA 更新/e2e 隔离/多任务扩展)
 
 1. **typecheck**:CardsView v-for 未用变量修复;`typecheck`/`lint`/`build` 均通过。

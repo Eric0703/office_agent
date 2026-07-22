@@ -29,6 +29,8 @@ export const connectionStore = reactive({
   deviceId: loadDeviceId(),
   /** 配对 token(正式配对后持久化;原型期可为空) */
   token: localStorage.getItem(KEY_TOKEN) ?? "",
+  /** 待批准的 6 位配对码(身份页展示;批准/过期后清空) */
+  pairCode: "",
   /** 最近一条 intent.result(showing 态展示;终态 3s 后清除) */
   lastResult: null as IntentResultPayload | null,
   /** 未决 L2 确认请求(confirm_wait 态展示) */
@@ -52,6 +54,7 @@ export const connectionStore = reactive({
     localStorage.removeItem(KEY_TOKEN);
     this.deviceId = "";
     this.token = "";
+    this.pairCode = "";
     this.connected = false;
     this.lastResult = null;
     this.pendingConfirm = null;

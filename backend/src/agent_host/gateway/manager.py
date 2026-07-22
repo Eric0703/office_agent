@@ -7,7 +7,10 @@
 
 import hashlib
 import json
+import re
+import secrets
 import time
+import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -18,6 +21,8 @@ from agent_host.gateway.envelope import make_envelope
 from agent_host.store.repos import BriefingRepo, CardRepo, DeviceRepo
 
 ClarifyHandler = Callable[[str, str, str, "list[str] | None"], Awaitable[None]]
+
+PAIR_CODE_TTL_S = 300  # 登记册 §2.1:配对码 5 分钟有效、一次性
 
 
 def _now_ms() -> int:
@@ -40,12 +45,14 @@ class ConnectionManager:
         self._dev_mode = dev_mode
         self._conns: dict[str, WebSocket] = {}
         self._record_modes: dict[str, str] = {}  # record.start 登记的模式,上传时取用
+        self._pending_pairs: dict[str, dict[str, Any]] = {}  # 配对码 → 挂起请求(内存,一次性)
         self.clarify_handler: ClarifyHandler | None = None
 
     async def handle_connection(self, websocket: WebSocket) -> None:
-        """/ws 入口:首条须为 device.hello;认证失败按协议发结果后关闭。"""
+        """/ws 入口:首条为 device.hello 或 device.pair.request(未配对设备,登记册 §2.1)。"""
         await websocket.accept()
         device_id: str | None = None
+        pairing = False
         try:
             while True:
                 raw = await websocket.receive_text()
@@ -56,9 +63,18 @@ class ConnectionManager:
                 if not isinstance(msg, dict):
                     continue
                 if device_id is None:
-                    device_id = await self._on_hello(websocket, msg)
-                    if device_id is None:
-                        return
+                    msg_type = msg.get("type")
+                    if msg_type == "device.pair.request":
+                        # 配对请求:保持连接,等待 Owner 批准(approve_pair 推送结果);
+                        # 被拒(rejected)则服务端已关闭,直接退出循环
+                        pairing = await self._on_pair_request(websocket, msg.get("payload") or {})
+                        if not pairing:
+                            return
+                    elif msg_type == "device.hello":
+                        device_id = await self._on_hello(websocket, msg)
+                        if device_id is None:
+                            return
+                    # 其余类型:忽略(登记册 §1.3)
                 else:
                     await self.on_message(device_id, msg)
         except WebSocketDisconnect:
@@ -66,14 +82,40 @@ class ConnectionManager:
         finally:
             if device_id is not None:
                 self._conns.pop(device_id, None)
+            if pairing:
+                # 挂起等待中断连:清除该连接占有的配对码,允许端侧重来
+                for code in [c for c, p in self._pending_pairs.items() if p["ws"] is websocket]:
+                    self._pending_pairs.pop(code, None)
 
     async def _on_hello(self, websocket: WebSocket, msg: dict[str, Any]) -> str | None:
         """hello 认证;返回认证通过的 device_id,失败返回 None(连接已关闭)。"""
         if msg.get("type") != "device.hello":
             return None
         payload = msg.get("payload") or {}
-        if self._dev_mode != "auto_approve":
-            # 正式配对照(CLI approve)后续任务卡实现;此前一律要求配对
+        device_id = payload.get("device_id") or ""
+        token = payload.get("token") or ""
+        if self._dev_mode == "auto_approve":
+            # 仅限原型:dev_mode=auto_approve 直通,自动登记设备
+            device_id = device_id or f"dev-{int(time.time())}"
+            token = token or "dev"
+            self._devices.create(
+                device_id=device_id,
+                name=payload.get("device_name") or "虚拟工牌(原型)",
+                token_hash=hashlib.sha256(token.encode()).hexdigest(),
+                paired_at=datetime.now(UTC).isoformat(),
+            )
+            self._devices.touch_last_seen(device_id, datetime.now(UTC).isoformat())
+            self._conns[device_id] = websocket
+            await self._send(
+                websocket,
+                "device.hello.result",
+                {"status": "ok", "server_time": _now_ms(), "device_id": device_id},
+            )
+            await self.push_state_sync(device_id)
+            return device_id
+        # 正式路径(FR-01):校验 device_id + token 哈希;吊销即时失效
+        row = self._devices.get(device_id) if device_id else None
+        if row is None:
             await self._send(
                 websocket,
                 "device.hello.result",
@@ -81,15 +123,22 @@ class ConnectionManager:
             )
             await websocket.close()
             return None
-        # 仅限原型:dev_mode=auto_approve 直通,自动登记设备
-        device_id = payload.get("device_id") or f"dev-{int(time.time())}"
-        token = payload.get("token") or "dev"
-        self._devices.create(
-            device_id=device_id,
-            name=payload.get("device_name") or "虚拟工牌(原型)",
-            token_hash=hashlib.sha256(token.encode()).hexdigest(),
-            paired_at=datetime.now(UTC).isoformat(),
-        )
+        if row["revoked_at"]:
+            await self._send(
+                websocket,
+                "device.hello.result",
+                {"status": "revoked", "server_time": _now_ms()},
+            )
+            await websocket.close()
+            return None
+        if row["token_hash"] != hashlib.sha256(token.encode()).hexdigest():
+            await self._send(
+                websocket,
+                "device.hello.result",
+                {"status": "auth_failed", "server_time": _now_ms()},
+            )
+            await websocket.close()
+            return None
         self._devices.touch_last_seen(device_id, datetime.now(UTC).isoformat())
         self._conns[device_id] = websocket
         await self._send(
@@ -98,6 +147,50 @@ class ConnectionManager:
             {"status": "ok", "server_time": _now_ms(), "device_id": device_id},
         )
         await self.push_state_sync(device_id)
+        return device_id
+
+    async def _on_pair_request(self, websocket: WebSocket, payload: dict[str, Any]) -> bool:
+        """登记 pending 配对(6 位数字码,5 分钟一次性);Owner 批准后由 approve_pair 推送结果。
+
+        返回 True = 保持连接等待批准;False = 已拒绝并关闭,调用方应结束连接循环。
+        """
+        code = str(payload.get("pair_code", ""))
+        if not re.fullmatch(r"\d{6}", code):
+            await self._send(websocket, "device.pair.result", {"status": "rejected"})
+            await websocket.close()
+            return False
+        self._pending_pairs[code] = {
+            "device_name": str(payload.get("device_name", ""))[:64],
+            "ws": websocket,
+            "ts": time.time(),
+        }
+        return True
+
+    async def approve_pair(self, code: str) -> str | None:
+        """Owner 批准配对:登记设备、签发 token 并推送 pair.result;返回新 device_id。
+
+        token 只经本条消息下发,devices 表只存哈希(规约 §8);
+        配对码过期(>5 分钟)按 expired 推送;码不存在/已过期返回 None(desk/CLI 映射 404)。
+        """
+        pending = self._pending_pairs.pop(code, None)
+        if pending is None:
+            return None
+        if time.time() - pending["ts"] > PAIR_CODE_TTL_S:
+            await self._send(pending["ws"], "device.pair.result", {"status": "expired"})
+            return None
+        device_id = f"dev-{uuid.uuid4().hex[:12]}"
+        token = secrets.token_hex(16)
+        self._devices.create(
+            device_id=device_id,
+            name=pending["device_name"] or "虚拟工牌",
+            token_hash=hashlib.sha256(token.encode()).hexdigest(),
+            paired_at=datetime.now(UTC).isoformat(),
+        )
+        await self._send(
+            pending["ws"],
+            "device.pair.result",
+            {"status": "approved", "device_id": device_id, "token": token},
+        )
         return device_id
 
     async def on_message(self, device_id: str, msg: dict[str, Any]) -> None:
@@ -185,10 +278,15 @@ class ConnectionManager:
             envelope["id"] = msg_id  # heartbeat pong 复用 id
         await websocket.send_text(json.dumps(envelope, ensure_ascii=False))
 
-    async def pair(self, pair_code: str, device_name: str) -> None:
-        """登记 pending 配对;Owner CLI approve 后下发 device.pair.result(登记册 §2.1)。"""
-        raise NotImplementedError
-
-    async def revoke(self, device_id: str) -> None:
-        """吊销设备:token 立即失效并推送 device.revoke(08 §3)。"""
-        raise NotImplementedError
+    async def revoke(self, device_id: str) -> bool:
+        """吊销设备:token 立即失效并推送 device.revoke(08 §3);设备不存在/已吊销返回 False。"""
+        row = self._devices.get(device_id)
+        if row is None or row["revoked_at"]:
+            return False
+        self._devices.revoke(device_id, datetime.now(UTC).isoformat())
+        websocket = self._conns.pop(device_id, None)
+        if websocket is not None:
+            await self._send(websocket, "device.revoke", {})
+            # 吊销即断连:旧连接不得再发送任何控制消息(FR-01)
+            await websocket.close()
+        return True

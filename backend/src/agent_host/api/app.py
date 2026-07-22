@@ -6,6 +6,7 @@
 """
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -218,6 +219,28 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
         )
         return JSONResponse({"status": "ok"})
 
+    @app.post("/desk/pair/approve")
+    async def desk_pair_approve(request: Request) -> JSONResponse:
+        """Owner 批准配对码(本机接口;CLI `agent-host pair approve` 经此触发,登记册 §2.1)。"""
+        body = await request.json()
+        device_id = await manager.approve_pair(str(body.get("code", "")))
+        if device_id is None:
+            return JSONResponse(
+                status_code=404, content={"detail": "pair code not found or expired"}
+            )
+        return JSONResponse({"status": "approved", "device_id": device_id})
+
+    @app.post("/desk/pair/revoke")
+    async def desk_pair_revoke(request: Request) -> JSONResponse:
+        """吊销设备(本机接口):token 立即失效并向在线设备推送 device.revoke。"""
+        body = await request.json()
+        ok = await manager.revoke(str(body.get("device_id", "")))
+        if not ok:
+            return JSONResponse(
+                status_code=404, content={"detail": "device not found or already revoked"}
+            )
+        return JSONResponse({"status": "revoked"})
+
     @app.websocket("/ws")
     async def control_channel(websocket: WebSocket) -> None:
         await manager.handle_connection(websocket)
@@ -231,10 +254,15 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
         用 Starlette BackgroundTasks 而非裸 create_task:响应先回送,任务在
         ASGI 周期内受控执行(TestClient 下可测,行为与 uvicorn 一致)。
         """
-        # 原型期 dev_mode:只校验头存在,token 校验留待正式配对照(后续任务卡)
+        # dev_mode=auto_approve 时只校验头存在(原型旁路);正式路径校验 token 与吊销态(A1)
         device_id = request.headers.get("x-device-id", "")
         if not device_id:
             return JSONResponse(status_code=401, content={"detail": "missing X-Device-Id"})
+        if config.dev.dev_mode != "auto_approve":
+            device = devices.get(device_id)
+            token_hash = hashlib.sha256(request.headers.get("x-token", "").encode()).hexdigest()
+            if device is None or device["revoked_at"] or device["token_hash"] != token_hash:
+                return JSONResponse(status_code=401, content={"detail": "invalid device token"})
         body = await request.body()
         if len(body) > MAX_AUDIO_BYTES:
             return JSONResponse(status_code=413, content={"detail": "audio too large"})

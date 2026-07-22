@@ -138,7 +138,7 @@ Body 为原始音频字节。响应 JSON:
 
 大小上限 20MB(≈ 20 分钟 opus),超限 413。上传不完整(连接中断)由端侧整体重传,主机不做断点续传——补传语义在端侧缓存层(见 08 §1.1 OfflineCached)。
 
-> **实现状态(2026-07-19,Gate 0)**:A0 原型期 `dev_mode=auto_approve` 下,主机**仅校验 `X-Device-Id` 头存在**;`X-Token` 的正式校验属于 A1 配对实现,**当前未完成,不得宣称已实现**。
+> **实现状态(2026-07-21,A1-1)**:`dev_mode=auto_approve` 下主机**仅校验 `X-Device-Id` 头存在**(原型旁路);正式模式(dev_mode 为空)已校验 `X-Token` 哈希与吊销态,失败 401。
 
 ### 2.3 意图与执行
 
@@ -264,3 +264,4 @@ Body 为原始音频字节。响应 JSON:
 | 1.0(草案修订4) | 2026-07-20 | Owner 决策:B 档仿真画布与 A 统一为 300×400 竖向(128×296 窄行宽多次折行,存在一屏显示不完风险);296×128 保留为 2.9" 模组物理参数与协议档位 |
 | 1.0(草案修订5) | 2026-07-21 | 新增白名单指令 create_reminder(一次性定时提醒,非周期 cron):解析不确定经 clarify 候选确认(`remind:confirm` / `remind:cancel`),确认前不写入;复用现有信封与消息,无格式变更 |
 | 1.0(草案修订6) | 2026-07-21 | 多任务可编辑预览:`clarify.select` 增加可选 `edited_labels`;card 结构增加可选 `ref_task_id`;候选 id 约定 `task:confirm_all` / `task:cancel`;均为兼容新增,旧端可忽略 |
+| 1.0(草案修订7) | 2026-07-21 | A1-1 实现状态同步:正式配对落地(pair.request 挂起 → Owner 批准 → pair.result 签发 token;hello 校验 token 哈希;吊销即时失效并推送 device.revoke);音频上传正式模式校验 X-Token;协议字段无变更 |

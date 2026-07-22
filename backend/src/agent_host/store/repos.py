@@ -38,7 +38,10 @@ class DeviceRepo:
 
     def revoke(self, device_id: str, revoked_at: str) -> None:
         """写入 revoked_at,吊销立即生效。"""
-        ...
+        self._conn.execute(
+            "UPDATE devices SET revoked_at = ? WHERE id = ?", (revoked_at, device_id)
+        )
+        self._conn.commit()
 
     def touch_last_seen(self, device_id: str, seen_at: str) -> None:
         """更新最近在线时间。"""
