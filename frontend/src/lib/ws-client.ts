@@ -11,7 +11,7 @@ import {
 import { DeviceEvent } from "../state/machine";
 import { cardsStore } from "../stores/cards";
 import { connectionStore } from "../stores/connection";
-import { displayProfile } from "../stores/ui";
+import { displayProfile, uiStore } from "../stores/ui";
 import { vibrate } from "./haptics";
 import { remove as removePendingAudio } from "./pending-audio";
 
@@ -62,6 +62,15 @@ export class WsClient {
         client: "vbadge-web",
         client_version: "0.1.0",
         display_profile: displayProfile(), // 按当前 eink 档声明(登记册 §2.1)
+        capabilities: {
+          // 方案 A 统一能力声明:webm-opus 单声道音频 / 300×400 电子纸 / 三键 / LED+震动 / Wi-Fi
+          audio: { formats: ["webm-opus"], channels: 1 },
+          screen: { type: "eink", width: 300, height: 400, profile: displayProfile() },
+          keys: ["action", "page_up", "page_down"],
+          led: true,
+          haptics: true,
+          network: ["wifi"],
+        },
       });
     };
     this.ws.onmessage = (ev: MessageEvent<string>) => {
@@ -237,6 +246,9 @@ export class WsClient {
         break;
       case "intent.result":
         connectionStore.lastResult = msg.payload;
+        if (msg.payload.status === "clarify") {
+          uiStore.clarifyIndex = 0; // 新 clarify 到达:高亮归零(上翻/下翻移动起点)
+        }
         connectionStore.dispatch(DeviceEvent.IntentResult);
         // 仅终态(success/failed/low_confidence)出队恢复凭据;clarify/pending_confirm
         // 是中间态,凭据保留——放弃/断线后经 duplicate 补推可回到同一中间态(A1-2)

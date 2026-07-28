@@ -87,7 +87,17 @@ html.eink body {
 }
 
 .eink-canvas .result {
-  padding-top: 32px; /* 结果/澄清页顶部留白,避免标题贴画布上沿 */
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center; /* 结果/候选:内容组垂直居中(布局规则 2026-07-22) */
+  text-align: left; /* 文字左对齐(压掉 scoped 的居中) */
+}
+
+.eink-canvas .view.confirm {
+  justify-content: center; /* 确认页:内容组垂直居中(布局规则 2026-07-22) */
+  align-items: flex-start; /* 文字左对齐(压掉 scoped 的居中) */
+  text-align: left;
 }
 
 .eink-canvas button {
@@ -138,6 +148,26 @@ html.eink body {
   min-height: 0;
   overflow: hidden; /* 单页截断:内容超限由主机按档处理(契约 §6.4),端侧不滚动 */
   padding: 4px 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center; /* 布局规则(2026-07-22):内容组在内容区垂直居中(全部页) */
+}
+
+/* 布局规则(2026-07-22 Owner):状态栏顶、提示底、内容区中;
+   待办/提醒/简报/候选/确认/结果页:内容组垂直居中、文字左对齐;
+   身份首页:信息组水平+垂直居中,文字与二维码居中;A/B 同规,不写绝对坐标 */
+.eink-canvas .p-group {
+  text-align: left; /* 待办/提醒/简报:文字左对齐 */
+}
+
+.eink-canvas .p-content .p-identity {
+  align-self: center; /* 身份首页:信息组水平居中(配合上方垂直居中) */
+  text-align: center;
+}
+
+.eink-canvas .p-content .p-identity .qr {
+  margin-left: auto; /* 二维码居中 */
+  margin-right: auto;
 }
 
 .eink-canvas .p-content h1 {
@@ -158,7 +188,7 @@ html.eink body {
   margin: 0;
 }
 
-/* A 档无卡身份页(契约 §6.1;二维码 ≤160×160) */
+/* 身份首页(方案 A 默认页,契约 §6.1;二维码 ≤160×160) */
 .eink-canvas .p-content .idname {
   font-size: 20px;
   font-weight: bold;
@@ -182,8 +212,47 @@ html.eink body {
   padding-top: 4px;
 }
 
-.eink-canvas .p-key {
+.eink-canvas .p-hint-text {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+/* 电子纸档 clarify 候选:纯展示(无触屏);高亮反白(需 !important 压过画布纯黑白规则) */
+.eink-canvas .candidate-item.hl {
+  background: #000 !important;
+  color: #fff !important;
+}
+
+/* ---------- 硬件控制区(画布外,不受画布纯黑白压制) ---------- */
+/* 虚拟物理键:与未来 ESP32 GPIO 按键同语义(device-input.pressKey);
+   深色圆形粗边 + 按压 active 态,与屏幕内容明显区隔;宽度对齐画布,桌面居中 */
+.hw-keys {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  width: 300px;
+  margin: 12px auto 0;
+  padding: 10px 0 4px;
+}
+
+.hw-key {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 3px solid #111;
+  background: #333;
+  color: #fff;
   font-size: 14px;
-  padding: 4px 10px;
-  border: 1px solid #000 !important;
+  cursor: pointer;
+  user-select: none;
+}
+
+.hw-key:active:not(:disabled) {
+  background: #000;
+  transform: translateY(2px);
+}
+
+.hw-key:disabled {
+  opacity: 0.35;
+  cursor: default;
 }

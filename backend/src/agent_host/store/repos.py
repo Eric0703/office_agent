@@ -64,18 +64,21 @@ class RecordRepo:
     def create(
         self,
         record_id: str,
-        device_id: str,
+        device_id: str | None,
         mode: str,
         started_at: str,
         duration_ms: int,
         audio_tmp_path: str | None = None,
+        source: str = "device_audio",
     ) -> None:
-        """音频受理后落记录,初始 status='uploaded'。"""
+        """音频受理后落记录,初始 status='uploaded';device_id 可空(来源为 PC 文字等无设备入口)。"""
         self._conn.execute(
             "INSERT INTO records"
-            " (id, device_id, mode, started_at, duration_ms, audio_tmp_path, status, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, 'uploaded', ?)",
-            (record_id, device_id, mode, started_at, duration_ms, audio_tmp_path, _utc_now()),
+            " (id, device_id, source, mode, started_at, duration_ms, audio_tmp_path, status,"
+            " created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, 'uploaded', ?)",
+            (record_id, device_id, source, mode, started_at, duration_ms, audio_tmp_path,
+             _utc_now()),
         )
         self._conn.commit()
 

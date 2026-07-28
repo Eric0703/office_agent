@@ -9,7 +9,7 @@ from agent_host.store.repos import AuditRepo
 class AuditEvent:
     """一条审计事件;decision ∈ executed/confirmed/cancelled/timeout/failed。"""
 
-    device_id: str
+    device_id: str | None  # 来源设备;PC 文字等无设备来源落 NULL
     decision: str
     record_id: str | None = None
     intent: str | None = None

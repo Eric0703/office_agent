@@ -1,10 +1,15 @@
 <script setup lang="ts">
-// 录音页:静态"录音中" + 黑条 + "点击结束"(08 §6.1;Owner 决策:取消每秒计时,
+// 录音页:静态"录音中" + 黑条 + 结束提示(08 §6.1;Owner 决策:取消每秒计时,
 // 录音中不刷新,即时反馈由 LED+震动承担;满 3 分钟局刷一次提示,满 5 分钟自动停止)
+// 电子纸档无触屏:结束由画布外主操作键(录音键)承担,画布内只给静态提示;手机档保留"点击结束"按钮
 import { computed } from "vue";
 
-import { recordingUi, toggleRecording } from "../lib/recording";
+import { pressKey } from "../lib/device-input";
+import { recordingUi } from "../lib/recording";
 import { connectionStore } from "../stores/connection";
+import { uiStore } from "../stores/ui";
+
+const isEink = computed(() => uiStore.eink !== "off");
 
 const stateText = computed(() => {
   switch (connectionStore.state) {
@@ -26,7 +31,8 @@ const stateText = computed(() => {
     <h1>{{ stateText }}</h1>
     <template v-if="connectionStore.state === 'recording'">
       <p v-if="recordingUi.reminded" class="notice">已录制 3 分钟</p>
-      <button class="stop" @click="toggleRecording">点击结束</button>
+      <button v-if="!isEink" class="stop" @click="pressKey('action')">点击结束</button>
+      <p v-else class="hint">按录音键结束</p>
     </template>
     <p v-if="connectionStore.notice" class="notice">{{ connectionStore.notice }}</p>
   </section>

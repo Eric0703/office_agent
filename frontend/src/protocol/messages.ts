@@ -33,6 +33,30 @@ export interface DeviceHelloPayload {
   client_version: string;
   /** 端侧画布档位;主机按档截断推送内容(08 §6.4) */
   display_profile: DisplayProfile;
+  /** 端侧能力声明(方案 A 统一);固件版本对 PWA 无意义,不上报 */
+  capabilities: DeviceCapabilities;
+}
+
+/** 物理键标识(三键模型:主操作键 action + 上翻/下翻;与端侧 device-input 的 DeviceKey 一致) */
+export type CapabilityKey = "action" | "page_up" | "page_down";
+
+/** hello capabilities:端侧音频/屏幕/按键/外设/网络能力(方案 A 统一声明) */
+export interface DeviceCapabilities {
+  audio: {
+    formats: AudioFormat[];
+    channels: number;
+  };
+  screen: {
+    type: "eink";
+    /** 竖向逻辑画布尺寸(08 §6.3):A/B 统一 300×400 */
+    width: number;
+    height: number;
+    profile: DisplayProfile;
+  };
+  keys: CapabilityKey[];
+  led: boolean;
+  haptics: boolean;
+  network: string[];
 }
 
 /** device.hello.result (H→D);status != ok 时主机发送结果后关闭连接 */

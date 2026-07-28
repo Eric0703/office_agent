@@ -1,28 +1,24 @@
 <script setup lang="ts">
 // 确认页:L2 风险操作物理确认(宪法第 5 条;登记册 §2.3 confirm.request/response)
-import { wsClient } from "../lib/ws-client";
-import { DeviceEvent } from "../state/machine";
-import { connectionStore } from "../stores/connection";
+// 电子纸档无触屏:确认/取消由画布外主操作键承担(长按=确认执行,短按=取消),画布内只给文本提示
+import { computed } from "vue";
 
-function respond(decision: "confirm" | "cancel"): void {
-  const pending = connectionStore.pendingConfirm;
-  if (!pending) {
-    return;
-  }
-  wsClient.send("confirm.response", { confirm_id: pending.confirm_id, decision });
-  connectionStore.pendingConfirm = null;
-  connectionStore.dispatch(DeviceEvent.ConfirmResolved);
-}
+import { pressKey } from "../lib/device-input";
+import { connectionStore } from "../stores/connection";
+import { uiStore } from "../stores/ui";
+
+const isEink = computed(() => uiStore.eink !== "off");
 </script>
 
 <template>
-  <section class="view">
+  <section class="view confirm">
     <h1>{{ connectionStore.pendingConfirm?.title ?? "确认操作" }}</h1>
     <p v-if="connectionStore.pendingConfirm?.body">{{ connectionStore.pendingConfirm.body }}</p>
-    <div class="actions">
-      <button class="primary" @click="respond('confirm')">确认</button>
-      <button @click="respond('cancel')">取消</button>
+    <div v-if="!isEink" class="actions">
+      <button class="primary" @click="pressKey('action', 'long')">确认</button>
+      <button @click="pressKey('action')">取消</button>
     </div>
+    <p v-else class="hint">长按确认执行 · 短按取消</p>
   </section>
 </template>
 

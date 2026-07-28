@@ -1,8 +1,66 @@
 # 项目进展记录(供恢复会话使用)
 
-> 最新状态:**Gate 0 已通过(基线 335e4ef);A1-1 设备接入通过(基线 ed2fecf);A1-2 音频管线已实施(离线补传/错误分级/终态出队/duplicate 恢复/P1 时序),全部测试绿,待 Owner 验收,未提交**。
-> 下一步:A1-2 验收后提交基线,继续 A1-3(意图路由 LLM 分类 + 规则兜底,FR-04)。
+> 最新状态:**A1-2 基线 3a922cb(本地,未 push);最终修正轮 + 小修轮均完成——三键/布局/会话唯一/capabilities/clarify 取消/来源中立 + 旧库兼容升级/clarify.select 校验/revoke 清 capabilities/e2e 假绿修复;后端 108 passed、e2e 31/31×2 全绿,改动未提交,待 Owner 与 Codex 审核**。
+> 下一步:校准审核通过前暂停 A1-3;审核通过后继续 A1-3(意图路由 LLM 分类 + 规则兜底,FR-04)。
+> 产品决策(2026-07-22,最新):**方案 A 单屏 AI 工牌 + 三枚物理键**(主操作键[录音/麦克风标识]/上翻/下翻;第四枚"确认·返回"已删除不得恢复);方案 B 仅备选。
+> 文档权威:`docs/v2.0/` 为**候选基线(评审中,暂不生效)**;`docs/` 旧文件仅历史参考(见 `docs/README.md`);进展/待审核/未提交状态只记在本文件。
 > 下次恢复时对 AI 说:"读 PROGRESS.md 和 docs/ 规约,我们继续",即可无缝接续。
+
+## 2026-07-22(小修轮):旧库兼容 / clarify.select 校验 / revoke 清理 / e2e 假绿
+
+小修(非架构升级;生产代码净增 ≈70 行):
+
+1. **旧数据库兼容**:`store/db.py` 增加 `_upgrade_records_if_needed`(幂等)——PRAGMA 探 records 缺 source 或 device_id NOT NULL 才重建复制,旧记录 source 默认 device_audio,临时关外键(drafts 引用);无迁移框架。测试 `test_fr04_legacy_records_upgrade`(旧表一条数据,升级后数据在、可写 pc_text、二次 init 幂等)。
+2. **clarify.select 最小安全校验**(app.py `_on_clarify_select`,用 records + result_cache):record_id 存在且归属当前 device、缓存确为 clarify、candidate_id 是下发候选或类型匹配的 task:/remind:cancel;不满足直接忽略(不改库不审计)。测试 `test_fr08_clarify_select_minimal_validation`(他人设备/乱序 id/类型不匹配/不存在/终态后重发 5 类忽略 + 合法取消对照)。
+3. **revoke 清理**:manager.revoke 补一行清 capabilities;测试 `test_fr01_revoke_clears_capabilities`。
+4. **文档**:v2.0/01 确认分支改"长按主操作键确认、短按取消"(只动冲突文字)。
+5. **e2e 假绿修复**:badge-keys"结束并上传"用例改路由受理 + 显式断言(一次 POST、非空 X-Device-Id、200),测试日志不再出现该用例导致的 500(两轮全日志 grep 为 0)。
+
+验证:后端 ruff 绿、`pytest --runslow` **108 passed**(+3);前端 typecheck/lint/build 绿;Playwright 两轮 **31/31、31/31**;`git diff --check` 干净。
+
+## 2026-07-22(最终修正轮):三键 / 布局 / 会话唯一 / capabilities 生命周期 / clarify 取消 / 来源中立
+
+Owner 终审 6 项修正,已全部落实(改动仍未提交、未 push;保留 A1-2 checkpoint 3a922cb):
+
+1. **三枚物理键(Owner 最终决定)**:主操作键 action(实体录音/麦克风标识)/上翻/下翻;第四枚"确认·返回"已删除不得恢复。action 按状态复用:普通页短按开始录音、录音中短按结束上传、clarify 短按选定、clarify 长按取消、普通页长按回身份首页、失败结果页短按关闭、L2 确认页**长按确认/短按取消**(与旧四键相反);双击只预留不实现,单击零延迟。`DeviceKey = action|page_up|page_down`,capabilities.keys、PWA、协议、文档、测试全改三键;画布内仍零触摸按钮。
+2. **布局规则**:状态栏顶/提示底/内容区中;身份首页信息组水平+垂直居中(文字二维码居中);待办/提醒/简报/候选/确认/结果页内容组垂直居中、文字左对齐;A/B 同规不写绝对坐标;e2e 相对盒断言(±8px + textAlign)。截图已全部更新至 docs/v2.0/assets。
+3. **设备会话唯一**:hello 认证成功即退休同 device_id 旧连接(服务端关闭);`on_message` 活动性守卫——旧连接的 record.start/clarify.select/confirm.response/state.sync.request 整条忽略;finally 身份守卫保留(旧连接迟到退出不删新连接)。
+4. **capabilities 绑定当前连接**:每次 hello 必替换快照(未携带→清除);push/broadcast 发现当前连接失效时同步清理;旧连接退出不清新连接的值;test_fr01_reconnect 翻转重写(退休/替换/清除/身份守卫/旧连接消息无效果)。
+5. **clarify 取消 = 完整服务端终态**:`task:cancel`(歧义与预览通用,新增 `TaskCommandSkill.cancel_pending`)/`remind:cancel`——不执行候选、records done、audit cancelled(意图取路由登记)、终态 intent.result("已取消",success)入缓存:凭据出队、duplicate 恢复重放终态不卡候选页。新测试 `test_fr08_clarify_cancel.py`(3 单元 + 1 端到端 duplicate)。
+6. **来源中立 core**:records 表 device_id 可空 + 新增 source 列(device_audio/pc_audio/audio_file/pc_text,schema.sql);`process_text(text,confidence,mode,source,record_id?,device_id?)`——record_id 缺省真实登记(不伪造设备/录音记录),audit device_id 可 NULL;`ProcessOutcome` 只含 record_id + 消息序列,投递目标由 app 装配层决定。新测试 `test_fr04_pc_text.py`(无设备/无录音/不经 HTTP-WS)。
+
+验证:后端 ruff 绿、`pytest --runslow` **105 passed**;前端 typecheck/lint/build 绿;`badge-keys.spec.ts` 重写 12 条(身份居中/垂直居中左对齐/三键+capabilities/action 状态映射短长按/L2 短按取消长按确认/候选双向/翻页循环);e2e 排障:测试服务吃 `dist` 构建产物(e2e 前必须 `npm run build`),confirm.request 仅 uploading/processing 可迁移 confirm_wait。
+
+## 2026-07-22(校准修正轮):方案 A / 四键 / 后端韧性 / 文档候选基线
+
+Owner 审核校准后给出 6 项修正,已全部落实(改动仍未提交、未 push):
+
+1. **方案 A 统一(取代 07-22 早些时候的方案 B 决策)**:单屏 AI 工牌;已连接默认身份首页(姓名/部门/二维码,不含配对码);页序身份→待办/提醒→简报;上翻/下翻双向循环;方案 B 仅备选。PWA 页模型 [identity,...cards,briefing],`BadgeIdentity.vue` 共享身份片段;B 档仅作屏幕档位仿真。
+2. **四枚物理键**:录音/上翻/下翻/确认·返回;确认·返回短按=确认/选择、长按(≥600ms,pointer 计时)=取消/返回/回身份首页,其余键长按 no-op;澄清候选上/下双向循环移动;画布内保持纯显示无触摸按钮。三层区分(物理键/手势/语义动作)集中在 `device-input.ts`(`DeviceKey` 改 record|page_up|page_down|confirm_back,`pressKey(key, gesture)`)。
+3. **后端重连与发送韧性**:`handle_connection` finally 加身份守卫——旧连接迟到退出不清同 device_id 新连接与 capabilities(不主动关闭被替换连接,行为最小变更);`push`/`broadcast` 捕获 TransportClosed 按离线跳过(失效登记连接顺手移除)。确定性测试 `test_fr01_reconnect.py`(旧连接迟到退出)、`test_fr02_send_disconnect.py`(MockASR 闩锁,发送时断线仍终态落库/缓存/审计,重连 duplicate 补推恢复)。
+4. **core 文本入口**:音频接收/转写/清理与统一投递 `_deliver` 移到 `api/app.py` 装配层;`core/processing.py` 零推送,提供 `process_text()/record_asr_failure()/on_clarify()` 返回 `ProcessOutcome`,终态落库/结果缓存/审计先于投递完成;设备录音/PC 文字/PC 录音/音频文件共用 process_text(`test_fr04_process_text.py` 直接调文本入口验证)。消息类型/payload/顺序、records 状态、审计字段不变。
+5. **hello capabilities**:PWA hello 上报与方案 A 一致(audio webm-opus/1ch、screen eink 300×400+profile、keys 四元组、led/haptics/wifi);e2e `badge-keys.spec.ts` 7 条(身份首页/双向翻页/短按选定/长按回首页/长按失败返回/候选双向/capabilities 断言)。
+6. **文档修正**:v2.0 全部 10 份头部改"候选基线(未经评审,暂不生效)/生效日期待定";方案 A/四键三层/capabilities 示例/韧性条款/process_text 边界写入 01/02/05/07/08/09;截图内聚 `docs/v2.0/assets/`(11 张,链接相对路径),`docs/assets/` 恢复为已提交历史状态;进展/待审核/未提交语句全部剥离(02 实现状态行、05 进展快照等已删),进展只记本文件;`docs/README.md` 改"候选基线(评审中)",不再称"唯一有效"。
+
+验证:后端 ruff 绿、`pytest --runslow` **98 passed**;前端 typecheck/lint/build 绿;Playwright 连续两轮 **26/26、26/26**;`git diff --check` 干净;根 `data/agent.db` 未被 e2e 触碰。
+
+## 2026-07-22(续):A1-2 基线 + 软硬件解耦校准
+
+### A1-2 checkpoint
+
+- Owner 验收通过;全部 A1-2 改动提交本地 checkpoint **`3a922cb`**(`feat(a1-2): 音频管线与置信度低路径——离线补传/错误分级/终态出队/duplicate 恢复(FR-02/03)`,15 文件,+1010/-21),**未 push**。
+
+### 软硬件解耦校准(本轮改动未提交,待 Owner 与 Codex 审核)
+
+- **后端边界(最小调整,行为不变)**:核心层对 Web 框架零依赖由 `tests/test_arch_boundaries.py` 守卫(ast 扫描);核心流程(转写文本→置信度闸门→路由→技能分发→结果→审计)从 `api/app.py` 抽入 `core/processing.py`(ProcessingDeps 依赖注入,app.py 仅装配)——设备录音/未来 PC 文字/PC 录音/音频文件共用同一核心流程;`gateway/transport.py` 新增 Transport 抽象(accept/receive_text/send_text/close,断开统一 `TransportClosed`),`WebSocketTransport` 为 FastAPI 唯一包装点,`gateway/manager.py` 不再 import fastapi;不加 MQTT、不实现 BLE。
+- **Device Capabilities**:`device.hello` payload 新增**可选** `capabilities` 字段(audio/screen/keys/led/haptics/storage_mb/battery/network/firmware_version),`gateway/capabilities.py` 容错解析(未知字段忽略、非法输入全空),主机**只登记不消费不落库**(会话内存,断连清理);`display_profile` 保留,仍是渲染档位唯一权威;技能不判断分辨率/设备型号(原本即无,现由边界测试固化)。
+- **PWA 硬件模拟修正**:电子纸画布(屏幕显示区)只显示内容——卡片/简报/录音状态/候选/确认/结果;画布内不再有"开始录音/点击结束"触摸按钮;画布外新增 `.hw-keys` 硬件控制区(录音/确认/返回/翻页四枚虚拟物理键,按状态禁用)。统一设备输入接口 `src/lib/device-input.ts`:`pressKey(record|confirm|back|page)` 唯一语义入口,虚拟物理键与手机演示按钮同走此接口,未来 ESP32 GPIO 映射同一语义;状态机与业务不区分事件来源。录音键语义不变:idle 按下开始、recording 再按停止上传、仅人工触发。
+- **docs/v2.0 文档基线**:11 个新文件(README+01~09+docs/README.md),每份带统一头(文档集版本 v2.0/待评审基线/生效日期/权威范围);只留最终结论,删除修订记录与对抗审查过程(结论融入正文);10 项未决问题集中于 `docs/v2.0/README.md` §5;开发计划去日历化,A3 改"硬件接入准备(按需)";Mermaid 逐字复用旧版已验证图块(本机无渲染器)。`docs/README.md` 声明 v2.0 唯一有效、旧文档仅历史参考、保留不删。
+- **测试**:后端新增 `test_arch_boundaries.py`(3 条)+ `test_fr01_device_capabilities.py`(4 条),全量 **90 passed**、ruff 绿;e2e 更新 `eink-shots.spec.ts`(物理键操作+画布无触摸按钮断言+截图改 .eink-frame)与 `recording.spec.ts`(新增 eink 物理键用例),其余 spec 未动,全量两轮 **19/19**;截图 docs/assets/eink-*.png ×10 已更新;typecheck/lint/build 绿;`git diff --check` 干净。
+
+### 校准限制(本轮明确不做)
+
+不开发 A1-3;不制定四个月计划;不实现 BLE/USB/MQTT/OTA/NFC/量产;不拆仓库;不重写 A1-2;不引入无关抽象;不 push;不自行宣布校准通过——待 Owner 与 Codex 审核。
 
 ## 2026-07-22(A1 开工):产品方向与 A1-2 离线补传
 

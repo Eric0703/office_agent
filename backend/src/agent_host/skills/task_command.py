@@ -248,6 +248,14 @@ class TaskCommandSkill:
             record_id=record_id, status="success", title=f"已新建:{task.title}", tool="create_task"
         )
 
+    def cancel_pending(self, record_id: str) -> ExecutionResult:
+        """task:cancel 统一取消(歧义 clarify 与多任务预览通用):不执行任何候选。
+
+        预览挂起弹掉(歧义 clarify 本无挂起态);终态落库/缓存/审计由编排层负责。
+        """
+        self._pending_preview.pop(record_id, None)
+        return ExecutionResult(record_id=record_id, status="success", title="已取消")
+
     def confirm_create(
         self, record_id: str, candidate_id: str, edited_labels: list[str] | None = None
     ) -> ExecutionResult:

@@ -27,6 +27,8 @@ export function displayProfile(): "400x300" | "296x128" {
 
 export const uiStore = reactive({
   eink: detectProfile() as EinkProfile,
-  /** B 档一屏一卡的当前页序号(0 起;卡片页之间循环) */
+  /** 方案 A 页模型的当前页序号(0 = 身份首页;身份 → 卡片 → 简报,上翻/下翻双向循环) */
   cardPage: 0,
+  /** clarify 候选的当前高亮序号(0 起;上翻/下翻键 ±1 双向循环,新 clarify 到达时归零) */
+  clarifyIndex: 0,
 });

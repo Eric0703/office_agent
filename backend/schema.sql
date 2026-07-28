@@ -16,7 +16,8 @@ CREATE TABLE IF NOT EXISTS devices (
 
 CREATE TABLE IF NOT EXISTS records (
   id              TEXT PRIMARY KEY,          -- record_id,端侧生成,幂等键
-  device_id       TEXT NOT NULL REFERENCES devices(id),
+  device_id       TEXT REFERENCES devices(id),  -- 来源设备;PC 文字等无设备来源为 NULL
+  source          TEXT NOT NULL DEFAULT 'device_audio',  -- 来源类型:device_audio/pc_audio/audio_file/pc_text
   mode            TEXT NOT NULL CHECK (mode IN ('auto','field','experience')),
   started_at      TEXT NOT NULL,
   duration_ms     INTEGER NOT NULL,

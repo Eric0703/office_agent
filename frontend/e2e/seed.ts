@@ -31,17 +31,26 @@ export function envelope(type: string, payload: object): string {
 export interface FakeHost {
   ws: WebSocketRoute | null;
   hellos: number;
+  /** 收到的 device.hello payload(按次序;capabilities 等断言用) */
+  helloPayloads: Array<Record<string, unknown>>;
+  /** 收到的全部非 hello D→H 消息(clarify.select 等断言用) */
+  messages: Array<{ type: string; payload?: Record<string, unknown> }>;
 }
 
-/** 装配假主机(hello ok + state.sync;其余消息忽略),用于无真实 ASR 依赖的确定性用例 */
-export async function installFakeHost(page: Page): Promise<FakeHost> {
-  const host: FakeHost = { ws: null, hellos: 0 };
+/** 装配假主机(hello ok + state.sync;其余消息记录到 messages),用于无真实 ASR 依赖的确定性用例。
+ *  seed.cards/briefing 作为 state.sync 内容下发(页模型用例需要种子卡/简报)。 */
+export async function installFakeHost(
+  page: Page,
+  seed: { cards?: object[]; briefing?: object } = {},
+): Promise<FakeHost> {
+  const host: FakeHost = { ws: null, hellos: 0, helloPayloads: [], messages: [] };
   await page.routeWebSocket("**/ws", (ws) => {
     host.ws = ws;
     ws.onMessage((msg) => {
-      const m = JSON.parse(String(msg)) as { type: string };
+      const m = JSON.parse(String(msg)) as { type: string; payload?: Record<string, unknown> };
       if (m.type === "device.hello") {
         host.hellos += 1;
+        host.helloPayloads.push(m.payload ?? {});
         ws.send(
           envelope("device.hello.result", {
             status: "ok",
@@ -49,7 +58,14 @@ export async function installFakeHost(page: Page): Promise<FakeHost> {
             device_id: "dev-fake",
           }),
         );
-        ws.send(envelope("state.sync", { cards: [] }));
+        ws.send(
+          envelope("state.sync", {
+            cards: seed.cards ?? [],
+            ...(seed.briefing ? { briefing: seed.briefing } : {}),
+          }),
+        );
+      } else {
+        host.messages.push(m);
       }
     });
   });

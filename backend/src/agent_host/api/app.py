@@ -1,7 +1,9 @@
 """FastAPI app:HTTP/WS 端点装配、静态托管虚拟工牌(FR-12;登记册 §1.1 传输通道)。
 
 本模块是装配根:把 adapters/store/router/skills/gateway 连成闭环(08 §2 依赖方向);
-录音处理编排(08 §1.2)在此,业务规则仍归 router/skills。
+文本处理编排(08 §1.2)在 core/processing.py(零 Web 框架依赖,产出 ProcessOutcome 不推送),
+本模块构建 ProcessingDeps 并接线,负责音频编排(取行/转写/清理)与统一投递(_deliver);
+业务规则仍归 router/skills。
 原型期认证:dev_mode=auto_approve 时 hello 直通、音频上传只校验头存在(仅限原型)。
 """
 
@@ -24,13 +26,21 @@ from agent_host.adapters.task import MockTaskAdapter
 from agent_host.audio.pipeline import AudioPipeline
 from agent_host.audit.logger import AuditEvent, AuditLogger
 from agent_host.config import AppConfig, load_config
+from agent_host.core.processing import (
+    ProcessingDeps,
+    ProcessOutcome,
+    on_clarify,
+    process_text,
+    record_asr_failure,
+)
 from agent_host.gateway.manager import ConnectionManager
-from agent_host.router.router import Intent, IntentKind, IntentRouter
+from agent_host.gateway.transport import WebSocketTransport
+from agent_host.router.router import IntentRouter
 from agent_host.scheduler.jobs import reminder_loop
 from agent_host.skills.experience import ExperienceSkill
 from agent_host.skills.field_note import FieldNoteSkill
 from agent_host.skills.reminder import ReminderSkill
-from agent_host.skills.task_command import ExecutionResult, TaskCommandSkill
+from agent_host.skills.task_command import TaskCommandSkill
 from agent_host.store.db import init_db
 from agent_host.store.repos import (
     AuditRepo,
@@ -136,10 +146,100 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             result_cache.pop(next(iter(result_cache)))
         result_cache[record_id] = payload
 
-    async def push_result(device_id: str, payload: dict[str, object]) -> None:
-        """intent.result 统一出口:先缓存后推送;进程内重启丢失,重连仍走 state.sync。"""
-        cache_result(payload)
-        await manager.push(device_id, "intent.result", payload)
+    # 文本处理编排(core/processing.py)的全部外部依赖:core 产出 ProcessOutcome,不触推送
+    deps = ProcessingDeps(
+        records=records,
+        router=router,
+        field_notes=field_notes,
+        experience=experience,
+        reminders=reminders,
+        task_commands=task_commands,
+        audit=audit,
+        low_confidence_threshold=config.asr.low_confidence_threshold,
+        cache_result=cache_result,
+    )
+
+    async def _deliver(device_id: str, outcome: ProcessOutcome) -> None:
+        """统一投递 core 出站消息:逐条推送;断连/离线容错在 manager.push,不中断后续消息。
+
+        投递目标由装配层决定(设备音频路径取 records 行的 device_id;clarify 取消息来源设备),
+        core 的 ProcessOutcome 不携带投递目标(来源中立)。
+        """
+        for msg in outcome.messages:
+            await manager.push(device_id, msg.msg_type, msg.payload)
+
+    async def _process_audio(record_id: str) -> None:
+        """音频编排(装配根职责,08 §1.2 主机侧管线):取行 → 转写 → 清理 → 文本处理 → 投递。
+
+        ASR 失败:cleanup + record_asr_failure;成功:cleanup + set_transcript + process_text。
+        records 取行与设备归属判定保持原逻辑(device_id 取自 record row)。
+        """
+        row = records.get(record_id)
+        if row is None:
+            return
+        device_id: str = row["device_id"]
+        try:
+            text, confidence = await asyncio.to_thread(
+                audio.transcribe_file, row["audio_tmp_path"]
+            )
+        except Exception:
+            logger.exception("ASR 转写失败 record_id=%s", record_id)
+            audio.cleanup(record_id)  # 失败同样删除原始音频(宪法第 3 条)
+            outcome = record_asr_failure(deps, record_id=record_id)
+        else:
+            audio.cleanup(record_id)  # 转写成功后立即删除原始音频(宪法第 3 条)
+            records.set_transcript(record_id, text, confidence)
+            outcome = process_text(
+                deps,
+                record_id=record_id,
+                text=text,
+                confidence=confidence,
+                mode=row["mode"],
+                source=row["source"] if "source" in row.keys() else "device_audio",
+                device_id=device_id,
+            )
+        await _deliver(device_id, outcome)
+
+    async def _on_clarify_select(
+        device_id: str,
+        record_id: str,
+        candidate_id: str,
+        edited_labels: list[str] | None = None,
+    ) -> None:
+        """clarify.select 接线:最小安全校验后 core 出 outcome;None(未知候选)则不出站。
+
+        最小安全校验(不满足直接忽略,不改库、不审计):record_id 存在且归属当前
+        device_id;当前缓存结果确为 clarify;candidate_id 是该次下发的候选,
+        或与该次 clarify 类型匹配的取消 id(remind:* → remind:cancel,否则 task:cancel)。
+        """
+        row = records.get(record_id)
+        cached = result_cache.get(record_id)
+        if row is None or row["device_id"] != device_id:
+            return
+        if cached is None or cached.get("status") != "clarify":
+            return
+        issued = {
+            str(c.get("candidate_id"))
+            for c in cached.get("candidates") or []
+            if isinstance(c, dict)
+        }
+        if candidate_id not in issued:
+            cancel_id = (
+                "remind:cancel"
+                if any(cid.startswith("remind:") for cid in issued)
+                else "task:cancel"
+            )
+            if candidate_id != cancel_id:
+                return
+        outcome = on_clarify(
+            deps,
+            device_id=device_id,
+            record_id=record_id,
+            candidate_id=candidate_id,
+            edited_labels=edited_labels,
+        )
+        if outcome is not None:
+            await _deliver(device_id, outcome)
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -276,7 +376,8 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
 
     @app.websocket("/ws")
     async def control_channel(websocket: WebSocket) -> None:
-        await manager.handle_connection(websocket)
+        # FastAPI WebSocket 在装配根包成 Transport;manager 只依赖 Transport 抽象
+        await manager.handle_connection(WebSocketTransport(websocket))
 
     @app.post("/audio/{record_id}")
     async def upload_audio(
@@ -321,185 +422,10 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             data=body,
             fmt=request.headers.get("x-audio-format", "webm-opus"),
         )
-        background.add_task(_process_record, record_id)
+        background.add_task(_process_audio, record_id)
         return JSONResponse({"status": "received", "record_id": record_id})
 
-    async def _process_record(record_id: str) -> None:
-        """转写 → 清理 → 路由 → 执行/草稿 → 回送(08 §1.2 主机侧管线)。"""
-        row = records.get(record_id)
-        if row is None:
-            return
-        device_id: str = row["device_id"]
-        try:
-            text, confidence = await asyncio.to_thread(
-                audio.transcribe_file, row["audio_tmp_path"]
-            )
-        except Exception:
-            logger.exception("ASR 转写失败 record_id=%s", record_id)
-            audio.cleanup(record_id)  # 失败同样删除原始音频(宪法第 3 条)
-            records.update_status(record_id, "failed")
-            await push_result(
-                device_id,
-                {
-                    "record_id": record_id,
-                    "status": "failed",
-                    "title": "未能识别,请在安静处重新录音",
-                    "error_code": "ASR_FAILED",
-                },
-            )
-            return
-        audio.cleanup(record_id)  # 转写成功后立即删除原始音频(宪法第 3 条)
-        records.set_transcript(record_id, text, confidence)
-        if confidence < config.asr.low_confidence_threshold:
-            records.update_status(record_id, "failed")
-            await push_result(
-                device_id,
-                {
-                    "record_id": record_id,
-                    "status": "low_confidence",
-                    "title": "没有听清,请重新录音",
-                    "error_code": "ASR_LOW_CONFIDENCE",
-                },
-            )
-            return
-
-        intent = router.route(text, mode=row["mode"])
-        records.set_intent(record_id, intent.command or intent.kind.value)
-        records.update_status(record_id, "routed")
-        if intent.kind is IntentKind.TASK_COMMAND:
-            await _run_task_command(device_id, record_id, intent)
-        elif intent.kind in (IntentKind.FIELD_NOTE, IntentKind.EXPERIENCE):
-            if intent.kind is IntentKind.FIELD_NOTE:
-                field_notes.process(record_id, text)
-                title = "笔记草稿已生成"
-            else:
-                experience.process(record_id, text)
-                title = "经验卡片草稿已生成"
-            records.update_status(record_id, "done")
-            await push_result(
-                device_id,
-                {
-                    "record_id": record_id,
-                    "status": "success",
-                    "title": title,
-                    "body": "请到电脑端查看待确认草稿",
-                },
-            )
-            audit.log(
-                AuditEvent(
-                    device_id=device_id,
-                    decision="executed",
-                    record_id=record_id,
-                    intent=intent.kind.value,
-                    risk_level="L0",
-                    tool="draft",
-                    result=title,
-                )
-            )
-        else:  # unknown:不猜测执行(08 §1.2)
-            records.update_status(record_id, "failed")
-            await push_result(
-                device_id,
-                {
-                    "record_id": record_id,
-                    "status": "failed",
-                    "title": "没有理解,请换种说法",
-                    "error_code": "INTENT_UNKNOWN",
-                },
-            )
-            audit.log(
-                AuditEvent(
-                    device_id=device_id,
-                    decision="failed",
-                    record_id=record_id,
-                    intent="unknown",
-                    result="INTENT_UNKNOWN",
-                )
-            )
-
-    async def _run_task_command(device_id: str, record_id: str, intent: Intent) -> None:
-        if intent.command == "create_reminder":
-            # 一次性定时提醒:解析明确才直建,不确定经 clarify 确认,确认前不写入(FR-07)
-            result = reminders.execute(intent.entities.get("remind_query", ""), record_id)
-        else:
-            result = task_commands.execute(intent, record_id)
-        await _push_execution_result(device_id, result)
-        if result.status == "clarify":
-            return  # 中间态:等 clarify.select,终态再审计
-        records.update_status(record_id, "done" if result.status == "success" else "failed")
-        audit.log(
-            AuditEvent(
-                device_id=device_id,
-                decision="executed" if result.status == "success" else "failed",
-                record_id=record_id,
-                intent=intent.command,
-                risk_level="L1" if intent.command in ("complete_task", "create_reminder") else "L0",
-                tool=result.tool,
-                result=result.title,
-            )
-        )
-
-    async def _push_execution_result(device_id: str, result: ExecutionResult) -> None:
-        payload: dict[str, object] = {
-            "record_id": result.record_id,
-            "status": result.status,
-            "title": result.title,
-        }
-        if result.body:
-            payload["body"] = result.body
-        if result.candidates:
-            payload["candidates"] = list(result.candidates)
-        if result.error_code:
-            payload["error_code"] = result.error_code
-        await push_result(device_id, payload)
-        for card_id in result.dismissed_card_ids:
-            # "说完即消"(08 §1.3):语音完成任务 → 撤下对应卡片
-            await manager.push(
-                device_id, "reminder.dismiss", {"card_id": card_id, "reason": "completed"}
-            )
-
-    async def _on_clarify(
-        device_id: str, record_id: str, candidate_id: str, edited_labels: list[str] | None = None
-    ) -> None:
-        """clarify.select:任务候选(task_id)/提醒确认(remind:*)/多任务预览(task:*),回终态。"""
-        is_remind = candidate_id.startswith("remind:")
-        is_task_preview = candidate_id.startswith("task:")
-        if is_remind:
-            result = reminders.confirm_pending(record_id, candidate_id)
-        elif is_task_preview:
-            result = task_commands.confirm_create(record_id, candidate_id, edited_labels)
-        else:
-            try:
-                result = task_commands.complete_by_id(candidate_id, record_id)
-            except KeyError:
-                return
-        await _push_execution_result(device_id, result)
-        records.update_status(record_id, "done")
-        if candidate_id in ("remind:cancel", "task:cancel"):
-            decision = "cancelled"
-        elif is_remind or is_task_preview:
-            decision = "confirmed"
-        else:
-            decision = "executed"
-        if is_remind:
-            intent_label = "create_reminder"
-        elif is_task_preview:
-            intent_label = "create_task"
-        else:
-            intent_label = "complete_task"
-        audit.log(
-            AuditEvent(
-                device_id=device_id,
-                decision=decision,
-                record_id=record_id,
-                intent=intent_label,
-                risk_level="L1",
-                tool=result.tool,
-                result=result.title,
-            )
-        )
-
-    manager.clarify_handler = _on_clarify
+    manager.clarify_handler = _on_clarify_select
 
     if FRONTEND_DIST.is_dir():
         app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="vbadge")
