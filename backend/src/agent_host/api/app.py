@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from agent_host.adapters.asr import ASRAdapter, FasterWhisperASR, MockASR
-from agent_host.adapters.llm import create_llm_adapter
+from agent_host.adapters.llm import LLMNotConfiguredError, create_llm_adapter
 from agent_host.adapters.task import MockTaskAdapter
 from agent_host.audio.pipeline import AudioPipeline
 from agent_host.audit.logger import AuditEvent, AuditLogger
@@ -124,8 +124,17 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
                 model_size=config.asr.model or "small", hotwords=config.asr.hotwords
             )
         )
-    llm = create_llm_adapter(config.llm)  # 默认 mock;真实 provider 双闸门,未配置显式报错(规约 §4)
-    router = IntentRouter(llm)
+    # 第三方 LLM 运行时接入暂停(宪法第 3 条:人名/组织名脱敏与出域审计未就绪)——
+    # 运行时只用 mock 规则路由;OpenAICompatibleProvider 仅供合成黄金集验收测试直接调用。
+    # 待后续安全任务完成脱敏与出域审计后开放(见 v2.0/README §5 未决清单)。
+    if config.llm.provider != "mock":
+        raise LLMNotConfiguredError(
+            "第三方 LLM 运行时接入未开放:转写文本的脱敏与出域审计未就绪(宪法第 3 条);"
+            "请使用 llm.provider: mock(规则路由),真实模型仅限验收测试"
+        )
+    llm = create_llm_adapter(config.llm)  # mock provider 即"规则即 Mock"(原型语义)
+    _ = llm  # 装配期校验配置有效性;运行时路由恒为纯规则(见上)
+    router = IntentRouter(None)  # 运行时只用 mock 规则路由(第三方 LLM 运行时接入暂停)
     field_notes = FieldNoteSkill(drafts)
     experience = ExperienceSkill(drafts)
     reminders = ReminderSkill(cards, tasks_repo)

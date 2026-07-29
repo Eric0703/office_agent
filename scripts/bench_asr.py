@@ -76,6 +76,8 @@ def load_l1(subset: str, limit_ids: set[str] | None = None) -> list[dict]:
             e = json.loads(line)
             if limit_ids is not None and e["id"] not in limit_ids:
                 continue
+            if "files" not in e or subset not in e["files"]:
+                continue  # 文本级路由验收条目(046 起,无音频),ASR 基准跳过
             items.append({
                 "id": e["id"],
                 "ref": e["text"],

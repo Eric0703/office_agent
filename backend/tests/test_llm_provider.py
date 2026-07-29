@@ -76,3 +76,26 @@ class TestOpenAICompatibleGate:
         assert adapter.complete("hi", {}) == {"ok": True}
         assert captured["url"] == "https://llm.example.com/v1/chat/completions"
         assert captured["auth"] == "Bearer sk-test"
+
+
+def test_runtime_rejects_third_party_llm(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """运行时暂停第三方 LLM(宪法第 3 条脱敏/出域审计未就绪):非 mock provider 装配即报错。
+
+    OpenAICompatibleProvider 仅供合成黄金集验收测试直接调用;运行时保持 mock 规则路由。
+    """
+    from agent_host.api.app import create_app
+    from agent_host.config import AppConfig, AudioConfig, ProviderConfig, StoreConfig
+
+    monkeypatch.setenv("LLM_API_KEY", "dummy")
+    config = AppConfig(
+        store=StoreConfig(db_path=str(tmp_path / "agent.db")),
+        audio=AudioConfig(tmp_dir=str(tmp_path / "audio_tmp")),
+        llm=ProviderConfig(
+            provider="openai_compatible",
+            base_url="https://llm.example.com",
+            model="gpt-x",
+            allow_external=True,
+        ),
+    )
+    with pytest.raises(LLMNotConfiguredError, match="运行时接入未开放"):
+        create_app(config)

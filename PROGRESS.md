@@ -1,10 +1,40 @@
 # 项目进展记录(供恢复会话使用)
 
-> 最新状态:**A1-2 基线 3a922cb(本地,未 push);最终修正轮 + 小修轮均完成——三键/布局/会话唯一/capabilities/clarify 取消/来源中立 + 旧库兼容升级/clarify.select 校验/revoke 清 capabilities/e2e 假绿修复;后端 108 passed、e2e 31/31×2 全绿,改动未提交,待 Owner 与 Codex 审核**。
-> 下一步:校准审核通过前暂停 A1-3;审核通过后继续 A1-3(意图路由 LLM 分类 + 规则兜底,FR-04)。
+> 最新状态:**A1-2 基线 3a922cb、校准基线 c91f437(均本地,未 push);A1-3 已通过当前软件阶段验收——运行时暂停第三方 LLM(宪法第 3 条)/LLM 输出校验补齐/L1 语料补足三类各 50 条;后端 124 passed、1 skipped(真实 LLM Gate 延期验证,非阻断项);运行时保持纯规则,无需 API Key;本轮为存档:提交 A1-3 本地 checkpoint**。
+> 说明:未经 Owner 另行明确安排,不运行真实外部模型测试,不修改 LLM 接入代码;不索取、不接收、不展示任何 API Key。
 > 产品决策(2026-07-22,最新):**方案 A 单屏 AI 工牌 + 三枚物理键**(主操作键[录音/麦克风标识]/上翻/下翻;第四枚"确认·返回"已删除不得恢复);方案 B 仅备选。
 > 文档权威:`docs/v2.0/` 为**候选基线(评审中,暂不生效)**;`docs/` 旧文件仅历史参考(见 `docs/README.md`);进展/待审核/未提交状态只记在本文件。
 > 下次恢复时对 AI 说:"读 PROGRESS.md 和 docs/ 规约,我们继续",即可无缝接续。
+
+## 2026-07-22(A1-3 极小修复):confidence 超大整数 / entities 严格类型
+
+复审边界两修(生产代码仅 router/router.py,净增 ≈5 行):①校验顺序调整——先比 0~1 界(超大整数比较不抛 OverflowError)再查有限值,非法一律回退规则;②entities 字段缺失可用空字典,存在时必须 dict([]/""/0/null 均非法回退)。回归:`test_fr04_llm_huge_confidence_no_exception_no_stuck`(10**1000 不炸、records 到 done)、`test_fr04_llm_entities_list_rejected_rules_extract`(entities=[] 回退规则并正确抽取任务标题)。文档:删 PROGRESS 顶部过期"暂停 A1-3"行、回归文件说明 135→150。验证:ruff 绿;`pytest --runslow` **124 passed、1 skipped(真实 LLM Gate 仍未配置,如实 skipped)**;`git diff --check` 干净;未提交、未推送。
+
+## 2026-07-22(A1-3 复审小修):运行时暂停第三方 LLM / 输出校验 / 语料补足
+
+A1-3 复审未过,按硬约束小修(生产代码净增 ≈30 行):
+
+1. **运行时暂停第三方 LLM**(宪法第 3 条:人名/组织名脱敏与出域审计未就绪):`create_app` 对非 mock provider 显式抛 `LLMNotConfiguredError`,运行时恒为纯规则路由;`OpenAICompatibleProvider` 仅供合成黄金集验收测试直接调用;未加新配置项/新 provider。测试 `test_runtime_rejects_third_party_llm`。
+2. **LLM 输出校验补齐**(`_classify_llm` 内联,无 Schema 库):confidence 必须非 bool 数值、有限、0~1;complete_task.task_title / create_task.task_title/due / create_reminder.remind_query 必须 str|None;非法即回退规则。回归:`test_fr04_llm_confidence_nan_inf_out_of_range_rejected`(NaN/inf/-0.1/1.1/bool/str 全回退)、`test_fr04_llm_bad_entity_type_falls_back_without_stuck`(task_title 数组不炸,process_text 到 done 不卡 routed)。
+3. **语料补足**:L1 labels/texts 各 +15 条(FIELD/TASK/EXP-046~050),三类达各 50 条、共 175 条;新条目仅文本无音频,`bench_asr.py` 加 2 行守卫自动跳过;`test_fr04_l1_rules_fallback_regression` 计数动态化并断言语料规模(50/50/50/25)。
+4. **真实 LLM Gate 未运行**:环境无 LLM_API_KEY/LLM_BASE_URL/LLM_MODEL,`test_fr04_l1_llm_acceptance` 如实 skipped,不宣布 A1-3 通过。
+5. 文档:v2.0/02 FR-04 与 07 router 行改"运行时暂停"、v2.0/README 未决清单 +1(第 10 项:脱敏+出域审计安全任务)。
+
+验证:ruff 绿;`pytest --runslow` **122 passed、1 skipped**;`git diff --check` 干净;未提交、未推送。
+
+## 2026-07-22(A1-3):意图路由 LLM 分类 + 规则兜底(FR-04)
+
+- **校准基线已提交**:c91f437(本地,未 push);A1-3 开工。
+- **勘察量化**:规则兜底在 L1 黄金集基线 57.8%,且安全零容忍违例 2 例(FIELD-012"运维同学提醒…"被"提醒"误命中、FIELD-042"…已经完成了…"被"已完成"误命中)——证明 LLM 分类的必要性与规则收紧点。
+- **实现**(router/router.py,核心层零 Web 依赖不变):
+  - auto 判定顺序:显式模式优先 → LLM 分类(四类 + 白名单指令 + 参数,JSON 结构化;`_build_llm_prompt`)→ 关键词规则兜底;
+  - LLM 置信度 < 0.6 → unknown(反问,不走规则);LLM 异常/非法输出(intent 越界/指令非白名单/entities 非对象)→ 规则兜底;task_command 无指令名用规则补齐,补不出 → unknown(不猜测执行);
+  - 规则收紧:完成指令只认"标记为已完成/标记完成/标为完成/设为完成";提醒指令去掉裸"提醒"(保留 提醒我/定时提醒/定时任务)——L1 上 field/experience → task_command 归零;
+  - app 装配:mock provider 传 `IntentRouter(None)`(规则即 Mock 语义),真实 provider 启用 LLM 分类(双闸门不变)。
+- **测试**:`test_fr04_llm_router.py` 10 条桩 LLM 用例(采用/低置信反问/异常兜底/非法兜底/白名单外兜底/规则补齐/补不出 unknown/参数透传/remind_query 兜底/显式模式不调 LLM);`test_fr04_l1_regression.py`:规则回归(零容忍 = 0 硬断言 + 准确率地板 0.58 + field 召回 ≥0.9,混淆矩阵透明输出)与 **`test_fr04_l1_llm_acceptance`(Gate 1 实测:`--runslow` + `LLM_ACCEPTANCE=1` + `LLM_API_KEY/LLM_BASE_URL/LLM_MODEL`,断言 ≥95% 与零容忍,CI 默认跳过)**。
+- **文档**:v2.0/02 FR-04(LLM 分类语义/兜底/反问/白名单/验收口径)、07 router 模块行同步。
+- 验证:后端 ruff 绿、`pytest --runslow` **119 passed、1 skipped(验收实测,待真实 LLM)**;前端未改动,未跑 e2e。
+- **如实结论**:规则兜底单独达不到 Gate 1 指标(59.3%),它是可用性兜底;≥95% 指标取决于真实 LLM 验收实测(待 Owner 配置 provider 后运行)。
 
 ## 2026-07-22(小修轮):旧库兼容 / clarify.select 校验 / revoke 清理 / e2e 假绿
 
