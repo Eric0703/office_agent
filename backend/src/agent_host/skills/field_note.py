@@ -7,6 +7,7 @@
 import re
 from dataclasses import dataclass
 
+from agent_host.adapters.notes import MockNotesAdapter, NotesAdapter
 from agent_host.store.repos import DraftRepo
 
 _SENT_SPLIT = re.compile(r"[。!?;!?;\n]+")
@@ -57,8 +58,10 @@ def _render(record_id: str, transcript: str) -> str:
 class FieldNoteSkill:
     """process(record) → Draft(08 §2)。"""
 
-    def __init__(self, drafts: DraftRepo) -> None:
+    def __init__(self, drafts: DraftRepo, notes: NotesAdapter | None = None) -> None:
+        """notes 缺省为内存 Mock(存量装配/单测不触归档路径);生产由 app 装配 LocalNotesAdapter。"""
         self._drafts = drafts
+        self._notes = notes if notes is not None else MockNotesAdapter()
 
     def process(self, record_id: str, transcript: str) -> NoteDraft:
         """转写文本 → 结构化笔记草稿,写入 drafts 表(pending);音频由 audio 管线即删。"""
@@ -67,5 +70,18 @@ class FieldNoteSkill:
         return NoteDraft(id=draft_id, record_id=record_id, content_md=content_md)
 
     def archive(self, draft_id: str) -> str:
-        """人工确认后归档为 Markdown,返回文件路径。"""
-        raise NotImplementedError
+        """人工确认后归档为 Markdown,返回文件路径(宪法第 8 条)。
+
+        仅接受:存在的草稿、kind='note'、status='pending';
+        不存在 → KeyError;非笔记草稿或已非 pending(含重复确认)→ ValueError。
+        """
+        row = self._drafts.get(draft_id)
+        if row is None:
+            raise KeyError(draft_id)
+        if row["kind"] != "note" or row["status"] != "pending":
+            raise ValueError(draft_id)
+        path = self._notes.archive("现场记录", row["content_md"], draft_id)
+        if not self._drafts.confirm(draft_id, path):
+            # 并发下已被他人确认:不重复成功(文件已落盘但状态未变,由调用方按冲突处理)
+            raise ValueError(draft_id)
+        return path

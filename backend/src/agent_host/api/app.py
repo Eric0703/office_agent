@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 
 from agent_host.adapters.asr import ASRAdapter, FasterWhisperASR, MockASR
 from agent_host.adapters.llm import LLMNotConfiguredError, create_llm_adapter
+from agent_host.adapters.notes import LocalNotesAdapter
 from agent_host.adapters.task import MockTaskAdapter
 from agent_host.audio.pipeline import AudioPipeline
 from agent_host.audit.logger import AuditEvent, AuditLogger
@@ -135,7 +136,7 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
     llm = create_llm_adapter(config.llm)  # mock provider 即"规则即 Mock"(原型语义)
     _ = llm  # 装配期校验配置有效性;运行时路由恒为纯规则(见上)
     router = IntentRouter(None)  # 运行时只用 mock 规则路由(第三方 LLM 运行时接入暂停)
-    field_notes = FieldNoteSkill(drafts)
+    field_notes = FieldNoteSkill(drafts, LocalNotesAdapter(config.store.notes_dir))
     experience = ExperienceSkill(drafts)
     reminders = ReminderSkill(cards, tasks_repo)
     task_commands = TaskCommandSkill(MockTaskAdapter(tasks_repo), cards)
@@ -278,12 +279,13 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
 
     @app.get("/desk/drafts")
     async def desk_drafts() -> list[dict[str, object]]:
-        """PC 草稿工作台:待确认草稿队列(只读;归档确认未实现,不提供写接口)。
+        """PC 草稿工作台:待确认草稿队列(id 供确认归档端点寻址,不展示内部细节)。
 
         历史草稿经 _desk_draft_content 剔除内部标注行后返回,数据库原文不动。
         """
         return [
             {
+                "id": row["id"],
                 "kind": row["kind"],
                 "created_at": row["created_at"],
                 "content_md": _desk_draft_content(row["content_md"]),
@@ -291,6 +293,32 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             }
             for row in drafts.list_pending()
         ]
+
+    @app.post("/desk/drafts/{draft_id}/confirm")
+    async def desk_confirm_draft(draft_id: str) -> JSONResponse:
+        """人工确认归档笔记草稿(FR-05/宪法第 8 条):落盘 Markdown + drafts 置 confirmed + 审计。
+
+        只返回简洁状态,不回传本机文件路径;重复确认/非笔记草稿 409,不存在 404。
+        """
+        draft = drafts.get(draft_id)
+        try:
+            field_notes.archive(draft_id)
+        except KeyError:
+            return JSONResponse(status_code=404, content={"detail": "draft not found"})
+        except ValueError:
+            return JSONResponse(status_code=409, content={"detail": "draft not archivable"})
+        audit.log(
+            AuditEvent(
+                device_id=None,  # PC 工作台操作,无来源设备,不伪造
+                decision="confirmed",
+                record_id=draft["record_id"] if draft is not None else None,
+                intent="field_note",
+                risk_level="L1",
+                tool="notes.archive",
+                result="笔记草稿已归档",
+            )
+        )
+        return JSONResponse({"status": "confirmed"})
 
     @app.get("/desk/tasks")
     async def desk_tasks() -> list[dict[str, object]]:

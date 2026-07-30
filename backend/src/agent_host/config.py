@@ -63,6 +63,7 @@ class StoreConfig:
     """持久化路径配置。"""
 
     db_path: str = "data/agent.db"
+    notes_dir: str = "data/notes"  # 笔记草稿确认归档目录(FR-05,本机 Markdown)
 
 
 @dataclass(frozen=True)

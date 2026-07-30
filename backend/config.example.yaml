@@ -41,6 +41,7 @@ security:
 
 store:
   db_path: "data/agent.db"
+  notes_dir: "data/notes"       # 笔记草稿人工确认后的归档目录(FR-05,本机 Markdown)
 
 dev:
   # 仅限原型:hello 直通配对,跳过 CLI 审批;正式部署必须删除本节(严禁上线)

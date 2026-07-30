@@ -1,10 +1,28 @@
 # 项目进展记录(供恢复会话使用)
 
-> 最新状态:**A1-2 基线 3a922cb、校准基线 c91f437、A1-3 基线 b85ac00(均本地,未 push);A1-3 已通过当前软件阶段验收——运行时暂停第三方 LLM(宪法第 3 条)/LLM 输出校验补齐/L1 语料补足三类各 50 条;后端 124 passed、1 skipped(真实 LLM Gate 延期验证,非阻断项);运行时保持纯规则,无需 API Key;A1-3 本地 checkpoint 已提交(b85ac00,工作树干净,恢复会话时已复核 124 passed、1 skipped)**。
+> 最新状态:**A1-2 基线 3a922cb、校准基线 c91f437、A1-3 基线 b85ac00 与文档收尾 ad8df38 均已推送 origin/main;A1-4 第一小步"现场记录草稿人工确认归档"(FR-05 部分)已通过 Codex 复审,checkpoint 已建立并推送;FR-05 缺口"待办转任务草稿"仍未实现,列为 Owner 决策点**。
 > 说明:未经 Owner 另行明确安排,不运行真实外部模型测试,不修改 LLM 接入代码;不索取、不接收、不展示任何 API Key。
 > 产品决策(2026-07-22,最新):**方案 A 单屏 AI 工牌 + 三枚物理键**(主操作键[录音/麦克风标识]/上翻/下翻;第四枚"确认·返回"已删除不得恢复);方案 B 仅备选。
 > 文档权威:`docs/v2.0/` 为**候选基线(评审中,暂不生效)**;`docs/` 旧文件仅历史参考(见 `docs/README.md`);进展/待审核/未提交状态只记在本文件。
 > 下次恢复时对 AI 说:"读 PROGRESS.md 和 docs/ 规约,我们继续",即可无缝接续。
+
+## 2026-07-29(A1-4 第一小步,复审通过):现场记录草稿人工确认归档(FR-05 部分)
+
+按经 Codex 有条件通过的最小任务卡实施(不得称为 FR-05 收尾或 A1-4 完成):
+
+- **范围**:只补笔记草稿人工确认 + 本机 Markdown 归档 + drafts 状态/路径 + 一条审计 + 工作台确认按钮 + 文档与定向测试;待办转任务草稿、experience 入库、discard 入口、编辑/搜索/版本/批量、schema 与端云协议变更、真实 LLM、新依赖全部排除。
+- **实现**(生产代码净增 ≈95 行):
+  - `DraftRepo.confirm(draft_id, file_path) -> bool`:UPDATE 带 `status='pending'` 条件,按受影响行数判定;重复确认返回 False,不产生第二次成功(原 `set_status` 桩替换;discard 入口不开放);
+  - `LocalNotesAdapter`(adapters/notes.py):stdlib 写 `store.notes_dir`(新增配置项,默认 `data/notes`),文件名只用日期 + 完整 draft id,正文与 content_md 逐字一致;`NotesAdapter` 协议加 `draft_id` 参数,Mock 同步(同样按 draft_id 区分归档路径);
+  - `FieldNoteSkill.archive`:只接受存在 + kind='note' + pending,否则 KeyError(404)/ValueError(409);notes 依赖注入,缺省 Mock 兼容存量装配;
+  - `POST /desk/drafts/{id}/confirm`:成功只回 `{"status":"confirmed"}`(不回传 file_path);审计 device_id=None(不伪造 pc-desk)、record_id=草稿关联、intent=field_note、tool=notes.archive、risk_level=L1、decision=confirmed,不写转写/正文;
+  - `/desk/drafts` 响应 +`id` 字段(Agent API,非端云协议);DeskView 仅 note pending 显示"确认归档",请求期防重复点击,成功/失败简短提示,不显示路径与内部细节。
+- **文档**(同次):02 FR-05 范围说明改"归档已实现/待办转任务草稿未实现"、两处"同源只读"旧文字修正、Demo 注记缺口改"生成任务草稿";07 模块表 field_note/api 行;README §5 第 1 项收窄为待办转任务草稿缺口。
+- **测试**:`test_fr05_archive.py` 6 条(落盘一致/状态字段/出队/审计字段/重复 409 无第二审计与文件/experience 409/未知 404/repo 行数守卫,全 tmp_path 隔离);desk.spec.ts 改 1 增 2(确认成功消失不显示路径/失败简短提示;隔离库种子,不碰根 agent.db)。
+
+验证:见本轮汇报(定向 FR-05 / ruff / `--runslow` 全量 / typecheck·lint·build / desk.spec.ts / `git diff --check`);真实 LLM Gate 未运行。
+
+**复审修复(同日)**:文件名"日期 + id 前 8 位"碰撞导致静默覆盖(实证:deadbeef-11111111/-22222222 同文件)。仅改 `adapters/notes.py` 与 `test_fr05_archive.py`:文件名改"日期 + 完整 draft_id",Mock 同步按 draft_id 区分;不引入随机数/计数器/查重/版本/文件锁;API/Skill/Repo/前端/配置/schema/协议不动。回归 2 条:Local 同前缀双 id 双文件正文分别保留;Mock 同 title 双 id 两条记录。定向 8 passed、ruff 绿、全量 `--runslow` 132 passed、1 skipped、`git diff --check` 干净。
 
 ## 2026-07-22(A1-3 极小修复):confidence 超大整数 / entities 严格类型
 

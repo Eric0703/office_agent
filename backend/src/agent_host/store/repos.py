@@ -318,9 +318,20 @@ class DraftRepo:
             "SELECT * FROM drafts WHERE status = 'pending' ORDER BY created_at"
         ).fetchall()
 
-    def set_status(self, draft_id: str, status: str, file_path: str | None = None) -> None:
-        """确认(confirmed,记录归档路径)或放弃(discarded)。"""
-        ...
+    def confirm(self, draft_id: str, file_path: str) -> bool:
+        """人工确认归档:仅允许 pending → confirmed,写入归档路径与确认时间。
+
+        UPDATE 带 status='pending' 条件,按受影响行数判断转换是否成功:
+        草稿不存在或已非 pending(含重复确认)返回 False,不产生第二次成功。
+        放弃(discarded)入口本轮不开放。
+        """
+        cur = self._conn.execute(
+            "UPDATE drafts SET status = 'confirmed', file_path = ?, confirmed_at = ?"
+            " WHERE id = ? AND status = 'pending'",
+            (file_path, _utc_now(), draft_id),
+        )
+        self._conn.commit()
+        return cur.rowcount > 0
 
 
 class ExperienceRepo:
@@ -352,7 +363,7 @@ class AuditRepo:
 
     def append(
         self,
-        device_id: str,
+        device_id: str | None,
         decision: str,
         record_id: str | None = None,
         intent: str | None = None,

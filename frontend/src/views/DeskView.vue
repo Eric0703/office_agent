@@ -1,8 +1,8 @@
 <script setup lang="ts">
-// PC 草稿工作台(?desk=1):本机只读查看最近处理记录与待确认草稿(Gate 0 可观察性入口)。
-// 数据来自同源只读接口 /desk/records、/desk/drafts;不上传任何内容出本机;
-// 归档确认尚未实现,本页不提供任何写操作。
-import { onBeforeUnmount, onMounted, reactive } from "vue";
+// PC 草稿工作台(?desk=1):本机查看最近处理记录与待确认草稿(Gate 0 可观察性入口)。
+// 数据来自同源接口 /desk/records、/desk/drafts、/desk/tasks;不上传任何内容出本机;
+// 笔记草稿可经人工确认归档到本机笔记目录(FR-05);待办转任务草稿尚未实现。
+import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
 interface DeskRecord {
   created_at: string;
@@ -12,6 +12,7 @@ interface DeskRecord {
 }
 
 interface DeskDraft {
+  id: string;
   kind: "note" | "experience";
   created_at: string;
   content_md: string;
@@ -83,6 +84,30 @@ async function cancelReminder(t: DeskTask): Promise<void> {
   await fetch(`/desk/reminders/${t.id}/cancel`, { method: "POST" });
   await refresh();
 }
+
+/** 人工确认归档笔记草稿(FR-05):请求期间防重复点击;不回显本机文件路径 */
+const confirming = ref<Set<string>>(new Set());
+const notice = reactive({ ok: "", error: "" });
+
+async function confirmDraft(d: DeskDraft): Promise<void> {
+  if (confirming.value.has(d.id)) return;
+  confirming.value.add(d.id);
+  notice.ok = "";
+  notice.error = "";
+  try {
+    const resp = await fetch(`/desk/drafts/${d.id}/confirm`, { method: "POST" });
+    if (resp.ok) {
+      notice.ok = "草稿已归档到本机笔记目录";
+    } else {
+      notice.error = "归档未成功,请稍后重试";
+    }
+  } catch {
+    notice.error = "归档未成功,请稍后重试";
+  } finally {
+    confirming.value.delete(d.id);
+    await refresh();
+  }
+}
 </script>
 
 <template>
@@ -146,12 +171,22 @@ async function cancelReminder(t: DeskTask): Promise<void> {
 
     <section>
       <h2>待确认草稿</h2>
-      <p class="meta">草稿经人工确认后才生效;归档功能尚未实现。</p>
+      <p class="meta">草稿经人工确认后归档到本机笔记目录;待办转任务草稿尚未实现。</p>
+      <p v-if="notice.ok" class="notice-ok">{{ notice.ok }}</p>
+      <p v-if="notice.error" class="error">{{ notice.error }}</p>
       <p v-if="!desk.drafts.length" class="empty">暂无待确认草稿</p>
       <article v-for="(d, i) in desk.drafts" :key="i" class="draft">
         <header>
           <span class="kind">{{ KIND_LABEL[d.kind] ?? d.kind }}</span>
           <span class="time">{{ fmtTime(d.created_at) }}</span>
+          <button
+            v-if="d.kind === 'note'"
+            class="action"
+            :disabled="confirming.has(d.id)"
+            @click="confirmDraft(d)"
+          >
+            确认归档
+          </button>
           <span class="pending">待确认</span>
         </header>
         <pre class="content">{{ d.content_md }}</pre>
@@ -173,6 +208,10 @@ async function cancelReminder(t: DeskTask): Promise<void> {
 }
 .error {
   color: #d00;
+}
+.notice-ok {
+  color: #080;
+  font-size: 13px;
 }
 .empty {
   color: #888;
