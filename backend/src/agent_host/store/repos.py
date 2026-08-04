@@ -318,20 +318,65 @@ class DraftRepo:
             "SELECT * FROM drafts WHERE status = 'pending' ORDER BY created_at"
         ).fetchall()
 
-    def confirm(self, draft_id: str, file_path: str) -> bool:
+    def confirm(self, draft_id: str, file_path: str, task_titles: list[str] | None = None) -> bool:
         """人工确认归档:仅允许 pending → confirmed,写入归档路径与确认时间。
 
         UPDATE 带 status='pending' 条件,按受影响行数判断转换是否成功:
         草稿不存在或已非 pending(含重复确认)返回 False,不产生第二次成功。
         放弃(discarded)入口本轮不开放。
+        task_titles 提供时(待办转任务草稿,方案 D),task_drafts 写入与状态转换
+        处于同一 sqlite3 事务:任一 INSERT 失败整体 rollback——drafts 保持
+        pending、task_drafts 不留部分数据,用户可重试;不引入事务框架。
         """
-        cur = self._conn.execute(
-            "UPDATE drafts SET status = 'confirmed', file_path = ?, confirmed_at = ?"
-            " WHERE id = ? AND status = 'pending'",
-            (file_path, _utc_now(), draft_id),
-        )
+        try:
+            cur = self._conn.execute(
+                "UPDATE drafts SET status = 'confirmed', file_path = ?, confirmed_at = ?"
+                " WHERE id = ? AND status = 'pending'",
+                (file_path, _utc_now(), draft_id),
+            )
+            if cur.rowcount == 0:
+                self._conn.rollback()
+                return False
+            now = _utc_now()
+            for title in task_titles or []:
+                self._conn.execute(
+                    "INSERT OR IGNORE INTO task_drafts (id, source_draft_id, title, created_at)"
+                    " VALUES (?, ?, ?, ?)",
+                    (_new_id(), draft_id, title, now),
+                )
+        except Exception:
+            self._conn.rollback()
+            raise
         self._conn.commit()
-        return cur.rowcount > 0
+        return True
+
+
+class TaskDraftRepo:
+    """task_drafts 表:笔记草稿确认归档后抽取的待办任务草稿(FR-05)。
+
+    只读展示用,不进 tasks 表;确认/放弃/编辑/删除均不实现(Owner 决策方案 D)。
+    """
+
+    def __init__(self, conn: sqlite3.Connection) -> None:
+        self._conn = conn
+
+    def create_many(self, source_draft_id: str, titles: list[str]) -> int:
+        """批量保存任务草稿(INSERT OR IGNORE:同一笔记同标题不重复),返回保存条数。"""
+        now = _utc_now()
+        for title in titles:
+            self._conn.execute(
+                "INSERT OR IGNORE INTO task_drafts (id, source_draft_id, title, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (_new_id(), source_draft_id, title, now),
+            )
+        self._conn.commit()
+        return len(titles)
+
+    def list_all(self) -> list[sqlite3.Row]:
+        """全部任务草稿(创建时间正序),PC 工作台只读展示;不截断,新条目始终可见。"""
+        return self._conn.execute(
+            "SELECT * FROM task_drafts ORDER BY created_at"
+        ).fetchall()
 
 
 class ExperienceRepo:

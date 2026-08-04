@@ -8,11 +8,34 @@ import re
 from dataclasses import dataclass
 
 from agent_host.adapters.notes import MockNotesAdapter, NotesAdapter
-from agent_host.store.repos import DraftRepo
+from agent_host.store.repos import DraftRepo, TaskDraftRepo
 
 _SENT_SPLIT = re.compile(r"[。!?;!?;\n]+")
 _CONCLUSION_CUES = ("所以", "因此", "决定", "达成一致", "结论")
 _TODO_CUES = ("需要", "待办", "下一步", "尽快", "务必", "记得")
+_TODO_PLACEHOLDERS = ("(无明确待办)", "(待人工补充)")
+
+
+def extract_todo_titles(content_md: str) -> list[str]:
+    """从固定四段模板正文提取"## 待办"章节的项目符号标题(FR-05 待办转任务草稿)。
+
+    只认"## 待办"章节内的 "- " 行,不误取背景/要点/结论;跳过占位行。
+    """
+    lines = content_md.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line.strip() == "## 待办") + 1
+    except StopIteration:
+        return []
+    titles: list[str] = []
+    for line in lines[start:]:
+        stripped = line.strip()
+        if stripped.startswith("## "):
+            break
+        if stripped.startswith("- "):
+            title = stripped[2:].strip()
+            if title and title not in _TODO_PLACEHOLDERS:
+                titles.append(title)
+    return titles
 
 
 @dataclass(frozen=True)
@@ -58,10 +81,16 @@ def _render(record_id: str, transcript: str) -> str:
 class FieldNoteSkill:
     """process(record) → Draft(08 §2)。"""
 
-    def __init__(self, drafts: DraftRepo, notes: NotesAdapter | None = None) -> None:
-        """notes 缺省为内存 Mock(存量装配/单测不触归档路径);生产由 app 装配 LocalNotesAdapter。"""
+    def __init__(
+        self,
+        drafts: DraftRepo,
+        notes: NotesAdapter | None = None,
+        task_drafts: TaskDraftRepo | None = None,
+    ) -> None:
+        """notes/task_drafts 缺省为 None(存量装配/单测不触归档路径);生产由 app 装配。"""
         self._drafts = drafts
         self._notes = notes if notes is not None else MockNotesAdapter()
+        self._task_drafts = task_drafts
 
     def process(self, record_id: str, transcript: str) -> NoteDraft:
         """转写文本 → 结构化笔记草稿,写入 drafts 表(pending);音频由 audio 管线即删。"""
@@ -81,7 +110,13 @@ class FieldNoteSkill:
         if row["kind"] != "note" or row["status"] != "pending":
             raise ValueError(draft_id)
         path = self._notes.archive("现场记录", row["content_md"], draft_id)
-        if not self._drafts.confirm(draft_id, path):
-            # 并发下已被他人确认:不重复成功(文件已落盘但状态未变,由调用方按冲突处理)
+        # 待办转任务草稿(方案 D):drafts 状态转换与 task_drafts 写入同一事务(repo 层),
+        # 任一写入失败整体回滚——drafts 保持 pending 可重试,不留部分数据;
+        # 文件已落盘而事务失败时,重试覆盖同一路径(不做文件版本系统)
+        titles = (
+            extract_todo_titles(row["content_md"]) if self._task_drafts is not None else None
+        )
+        if not self._drafts.confirm(draft_id, path, titles):
+            # 并发或重复确认:不重复成功
             raise ValueError(draft_id)
         return path

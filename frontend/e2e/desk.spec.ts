@@ -14,9 +14,12 @@ const RUNTIME_DIR = path.resolve(HERE, "../.e2e-runtime");
 const PY = path.resolve(HERE, "../../backend/.venv/bin/python");
 
 const DRAFT_CONTENT = "# 现场记录\n\n## 背景\n讨论下季度方案。\n";
+const TODO_CONTENT =
+  "# 现场记录\n\n## 背景\n讨论下季度方案。\n\n## 要点\n- 讨论下季度方案。\n\n" +
+  "## 结论\n(待人工补充)\n\n## 待办\n- 需要整理会议纪要\n- 记得跟进预算审批\n";
 
 /** 向隔离库直接落一条 pending 笔记草稿(含关联 record) */
-function seedNoteDraft(draftId: string): void {
+function seedNoteDraft(draftId: string, content: string = DRAFT_CONTENT): void {
   const code = `
 import sqlite3
 conn = sqlite3.connect("data/agent.db")
@@ -29,7 +32,7 @@ conn.execute(
 conn.execute(
     "INSERT OR REPLACE INTO drafts (id, record_id, kind, content_md, status, created_at)"
     " VALUES (?, ?, 'note', ?, 'pending', '2026-07-29T00:01:00+00:00')",
-    ("${draftId}", "rec-e2e-${draftId}", ${JSON.stringify(DRAFT_CONTENT)}),
+    ("${draftId}", "rec-e2e-${draftId}", ${JSON.stringify(content)}),
 )
 conn.commit()
 conn.close()
@@ -81,6 +84,29 @@ test("草稿工作台:归档失败给出简短提示,不暴露内部细节", asy
   const body = await page.locator("body").innerText();
   expect(body).not.toContain("boom");
   expect(body).not.toContain("500");
+});
+
+test("草稿工作台:确认归档后待办列为任务草稿,只读且无操作按钮", async ({ page }) => {
+  seedNoteDraft("e2e-draft-todos", TODO_CONTENT);
+  await page.goto("/?desk=1");
+  // 隔离库中可能残留其他用例的 pending 草稿,定位到本条草稿的操作按钮
+  const article = page.locator("article.draft", { hasText: "需要整理会议纪要" });
+  await article.getByRole("button", { name: "确认归档" }).click();
+  await expect(page.getByText("草稿已归档到本机笔记目录")).toBeVisible();
+  // 两条有效待办 → 两个任务草稿,标题可见
+  await expect(page.getByText("任务草稿", { exact: true })).toHaveCount(2);
+  const td1 = page.locator("article.draft", { hasText: "需要整理会议纪要" });
+  const td2 = page.locator("article.draft", { hasText: "记得跟进预算审批" });
+  await expect(td1).toBeVisible();
+  await expect(td2).toBeVisible();
+  // 任务草稿只读:其条目内无任何操作按钮,也不出现在正式待办区
+  await expect(td1.getByRole("button")).toHaveCount(0);
+  await expect(td2.getByRole("button")).toHaveCount(0);
+  const todoSection = page.locator("section", {
+    has: page.getByRole("heading", { name: "待办任务 / 提醒" }),
+  });
+  await expect(todoSection).not.toContainText("需要整理会议纪要");
+  await expect(todoSection).not.toContainText("记得跟进预算审批");
 });
 
 test("草稿工作台:不影响工牌入口与 eink 档", async ({ page }) => {

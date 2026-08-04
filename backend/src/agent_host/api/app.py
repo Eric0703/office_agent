@@ -50,6 +50,7 @@ from agent_host.store.repos import (
     DeviceRepo,
     DraftRepo,
     RecordRepo,
+    TaskDraftRepo,
     TaskRepo,
 )
 
@@ -114,6 +115,7 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
     records = RecordRepo(conn)
     cards = CardRepo(conn)
     drafts = DraftRepo(conn)
+    task_drafts = TaskDraftRepo(conn)
     tasks_repo = TaskRepo(conn)
     audit = AuditLogger(AuditRepo(conn))
 
@@ -136,7 +138,7 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
     llm = create_llm_adapter(config.llm)  # mock provider 即"规则即 Mock"(原型语义)
     _ = llm  # 装配期校验配置有效性;运行时路由恒为纯规则(见上)
     router = IntentRouter(None)  # 运行时只用 mock 规则路由(第三方 LLM 运行时接入暂停)
-    field_notes = FieldNoteSkill(drafts, LocalNotesAdapter(config.store.notes_dir))
+    field_notes = FieldNoteSkill(drafts, LocalNotesAdapter(config.store.notes_dir), task_drafts)
     experience = ExperienceSkill(drafts)
     reminders = ReminderSkill(cards, tasks_repo)
     task_commands = TaskCommandSkill(MockTaskAdapter(tasks_repo), cards)
@@ -279,11 +281,12 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
 
     @app.get("/desk/drafts")
     async def desk_drafts() -> list[dict[str, object]]:
-        """PC 草稿工作台:待确认草稿队列(id 供确认归档端点寻址,不展示内部细节)。
+        """PC 草稿工作台:待确认草稿队列 + 任务草稿(id 供确认归档端点寻址,不展示内部细节)。
 
-        历史草稿经 _desk_draft_content 剔除内部标注行后返回,数据库原文不动。
+        历史草稿经 _desk_draft_content 剔除内部标注行后返回,数据库原文不动;
+        任务草稿(task_drafts 表)以 kind='task' 合并返回,content_md 即任务标题,只读展示。
         """
-        return [
+        items: list[dict[str, object]] = [
             {
                 "id": row["id"],
                 "kind": row["kind"],
@@ -293,6 +296,18 @@ def create_app(config: AppConfig | None = None, asr: ASRAdapter | None = None) -
             }
             for row in drafts.list_pending()
         ]
+        items += [
+            {
+                "id": row["id"],
+                "kind": "task",
+                "created_at": row["created_at"],
+                "content_md": row["title"],
+                "status": "pending",
+            }
+            for row in task_drafts.list_all()
+        ]
+        items.sort(key=lambda item: str(item["created_at"]))
+        return items
 
     @app.post("/desk/drafts/{draft_id}/confirm")
     async def desk_confirm_draft(draft_id: str) -> JSONResponse:

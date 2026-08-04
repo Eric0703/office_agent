@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // PC 草稿工作台(?desk=1):本机查看最近处理记录与待确认草稿(Gate 0 可观察性入口)。
 // 数据来自同源接口 /desk/records、/desk/drafts、/desk/tasks;不上传任何内容出本机;
-// 笔记草稿可经人工确认归档到本机笔记目录(FR-05);待办转任务草稿尚未实现。
+// 笔记草稿可经人工确认归档到本机笔记目录(FR-05);归档时识别出的待办列为任务草稿,只读展示。
 import { onBeforeUnmount, onMounted, reactive, ref } from "vue";
 
 interface DeskRecord {
@@ -13,7 +13,7 @@ interface DeskRecord {
 
 interface DeskDraft {
   id: string;
-  kind: "note" | "experience";
+  kind: "note" | "experience" | "task";
   created_at: string;
   content_md: string;
   status: string;
@@ -39,6 +39,7 @@ const desk = reactive({
 const KIND_LABEL: Record<string, string> = {
   note: "现场记录",
   experience: "经验卡片",
+  task: "任务草稿",
 };
 
 function fmtTime(iso: string): string {
@@ -171,7 +172,7 @@ async function confirmDraft(d: DeskDraft): Promise<void> {
 
     <section>
       <h2>待确认草稿</h2>
-      <p class="meta">草稿经人工确认后归档到本机笔记目录;待办转任务草稿尚未实现。</p>
+      <p class="meta">笔记草稿经人工确认后归档到本机笔记目录;识别出的待办列为任务草稿(非正式待办)。</p>
       <p v-if="notice.ok" class="notice-ok">{{ notice.ok }}</p>
       <p v-if="notice.error" class="error">{{ notice.error }}</p>
       <p v-if="!desk.drafts.length" class="empty">暂无待确认草稿</p>

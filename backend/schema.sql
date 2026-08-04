@@ -88,6 +88,14 @@ CREATE TABLE IF NOT EXISTS drafts (
   confirmed_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS task_drafts (
+  id              TEXT PRIMARY KEY,
+  source_draft_id TEXT NOT NULL REFERENCES drafts(id),  -- 来源笔记草稿
+  title           TEXT NOT NULL,
+  created_at      TEXT NOT NULL,
+  UNIQUE (source_draft_id, title)                       -- 同一笔记同标题幂等
+);
+
 CREATE TABLE IF NOT EXISTS experience_index (
   id         TEXT PRIMARY KEY,
   title      TEXT NOT NULL,

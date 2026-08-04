@@ -1,10 +1,23 @@
 # 项目进展记录(供恢复会话使用)
 
-> 最新状态:**A1-2 基线 3a922cb、校准基线 c91f437、A1-3 基线 b85ac00 与文档收尾 ad8df38 均已推送 origin/main;A1-4 第一小步"现场记录草稿人工确认归档"(FR-05 部分)已通过 Codex 复审,checkpoint 已建立并推送;FR-05 缺口"待办转任务草稿"仍未实现,列为 Owner 决策点**。
+> 最新状态:**A1-2 基线 3a922cb、校准基线 c91f437、A1-3 基线 b85ac00、文档收尾 ad8df38、A1-4 第一小步 cf3186a 均已推送 origin/main;"待办转任务草稿"已按 Owner 决策的方案 D 实现(独立 task_drafts 表只读展示,不进 tasks 表),A1-4 功能实现完成、已通过 Codex 复审;不宣布 Gate 1 或 A1 阶段通过**。
 > 说明:未经 Owner 另行明确安排,不运行真实外部模型测试,不修改 LLM 接入代码;不索取、不接收、不展示任何 API Key。
 > 产品决策(2026-07-22,最新):**方案 A 单屏 AI 工牌 + 三枚物理键**(主操作键[录音/麦克风标识]/上翻/下翻;第四枚"确认·返回"已删除不得恢复);方案 B 仅备选。
 > 文档权威:`docs/v2.0/` 为**候选基线(评审中,暂不生效)**;`docs/` 旧文件仅历史参考(见 `docs/README.md`);进展/待审核/未提交状态只记在本文件。
 > 下次恢复时对 AI 说:"读 PROGRESS.md 和 docs/ 规约,我们继续",即可无缝接续。
+
+## 2026-07-29(A1-4 方案 D,复审通过):待办转任务草稿(task_drafts 只读展示)
+
+Owner 否决任务卡 A/B/C,采用更小的方案 D(A1-4 功能实现完成,但不宣布 Gate 1 或 A1 阶段通过):
+
+- **实现**(生产代码净增 ≈70 行):schema.sql 新增 `task_drafts` 表(id/source_draft_id/title/created_at,`UNIQUE(source_draft_id, title)`,`CREATE TABLE IF NOT EXISTS`,无迁移框架);`TaskDraftRepo`(create_many INSERT OR IGNORE 幂等 / list_all);`extract_todo_titles`(只解析"## 待办"章节 bullets,跳过"(无明确待办)""(待人工补充)");`FieldNoteSkill.archive` 确认成功后写 task_drafts(依赖注入,缺省 None 兼容存量装配);`/desk/drafts` 合并返回 kind=task(content_md=标题,status=pending);DeskView 加"任务草稿"标签,只读、无确认按钮、不进待办区。
+- **禁止项遵守**:tasks 表/TaskRepo/TaskCommandSkill 未动;任务草稿确认/放弃/编辑/删除未实现;无新依赖/迁移框架/端云协议变更;路由/音频/LLM/A1-5 未碰。
+- **文档**(同次):02 FR-05 范围说明与入口行改已实现(方案 D 边界写明)、Demo 注移除"生成任务草稿"缺口;07 模块表 field_note 行 + §3 新增 task_drafts 行(9 表→10 表);README §5 删第 1 项并重编号(10→9 项)。
+- **测试**:`test_fr05_task_drafts.py` 6 条(章节抽取边界/归档生成 2 条且 tasks 为空/无待办 0 条/同笔记幂等/故障注入回滚重试/51 条可见性,全 tmp_path);desk.spec.ts +1(确认后两个任务草稿只读展示、无按钮、不出现在正式待办区)。
+
+验证:见本轮汇报(定向 / ruff / `--runslow` / typecheck·lint·build / desk.spec.ts / `git diff --check`);真实 LLM Gate 未运行。
+
+**复审修复(同日,Codex 对抗测试两阻断)**:①原子化——`DraftRepo.confirm` 增加可选 `task_titles`,drafts 状态转换与 task_drafts 写入合并为同一 sqlite3 事务(隐式事务 + 异常 rollback,无事务框架);`FieldNoteSkill.archive` 改走合并调用,写入失败 → 500、drafts 保持 pending、不留部分数据、无成功审计、可重试;文件落盘失败重试覆盖同路径。②`TaskDraftRepo.list_all` 去掉 LIMIT 50 截断(第 51 条永久不可见问题),不加分页不改协议。仅改 repos.py/field_note.py/测试;api/schema/前端/tasks 表未动。回归:trigger 故障注入(500→回滚→移除故障重试 200,审计仅一条)、51 条全可见(最新一条断言)。定向 14 passed、ruff 绿、全量 `--runslow` 138 passed、1 skipped、`git diff --check` 干净。
 
 ## 2026-07-29(A1-4 第一小步,复审通过):现场记录草稿人工确认归档(FR-05 部分)
 
