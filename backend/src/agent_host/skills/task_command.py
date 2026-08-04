@@ -7,7 +7,9 @@ L2 风险指令必须经 security 确认回路(宪法第 5 条);原型期白名�
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from difflib import SequenceMatcher
 
 from agent_host.adapters.task import TaskAdapter
@@ -93,6 +95,19 @@ def _similarity(query: str, title: str) -> float:
     return max(full, head)
 
 
+_RELATIVE_DAYS = {"今天": 0, "明天": 1, "后天": 2}
+
+
+def _resolve_due(due: str | None, now: datetime) -> str | None:
+    """常见相对期限(今天/明天/后天)落成稳定日期 YYYY-MM-DD(主机本地时区,FR-08);
+
+    不永久保存裸"明天"这类无法随时间解释的值;其他形式(如"下周一")原样保留。
+    """
+    if due in _RELATIVE_DAYS:
+        return (now.date() + timedelta(days=_RELATIVE_DAYS[due])).isoformat()
+    return due
+
+
 @dataclass(frozen=True)
 class ExecutionResult:
     """执行结果,经 intent.result 回送端侧(登记册 §2.3)。"""
@@ -115,9 +130,16 @@ class TaskCommandSkill:
     确认前不产生任何写入(Owner 指令:不猜测执行)。
     """
 
-    def __init__(self, tasks: TaskAdapter, cards: CardRepo) -> None:
+    def __init__(
+        self,
+        tasks: TaskAdapter,
+        cards: CardRepo,
+        now_fn: Callable[[], datetime] | None = None,
+    ) -> None:
+        """now_fn 可注入时钟(测试确定性);缺省取主机本地时间(相对期限落地用)。"""
         self._tasks = tasks
         self._cards = cards
+        self._now_fn = now_fn or (lambda: datetime.now().astimezone())
         self._pending_preview: dict[str, tuple[list[str], str | None]] = {}
 
     def execute(self, intent: Intent, record_id: str) -> ExecutionResult:
@@ -218,7 +240,7 @@ class TaskCommandSkill:
                 error_code="INTENT_UNKNOWN",
                 tool="create_task",
             )
-        due = intent.entities.get("due")
+        due = _resolve_due(intent.entities.get("due"), self._now_fn())
         titles = split_tasks(raw_title)
         # 多任务或口语猜测:先预览确认,不直接创建(FR-08 补充,2026-07-21)
         if len(titles) >= 2 or intent.entities.get("needs_confirm"):
@@ -259,8 +281,12 @@ class TaskCommandSkill:
     def confirm_create(
         self, record_id: str, candidate_id: str, edited_labels: list[str] | None = None
     ) -> ExecutionResult:
-        """多任务预览终局:确认(可带编辑后标题)才批量创建;取消/过期不产生任务。"""
-        pending = self._pending_preview.pop(record_id, None)
+        """多任务预览终局:确认(可带编辑后标题)才批量创建;取消/过期不产生任务。
+
+        批量创建经 TaskAdapter.add_many 单事务落库:任一写入失败整体回滚、异常上抛,
+        pending 预览保留可重试;全部成功提交后才清除预览(技能不触碰 sqlite3 连接)。
+        """
+        pending = self._pending_preview.get(record_id)
         if pending is None:
             return ExecutionResult(
                 record_id=record_id,
@@ -271,6 +297,7 @@ class TaskCommandSkill:
             )
         titles, due = pending
         if candidate_id == CANCEL_ID:
+            self._pending_preview.pop(record_id, None)
             return ExecutionResult(
                 record_id=record_id,
                 status="success",
@@ -278,6 +305,7 @@ class TaskCommandSkill:
                 tool="create_task",
             )
         if candidate_id != CONFIRM_ALL_ID:
+            self._pending_preview.pop(record_id, None)
             return ExecutionResult(
                 record_id=record_id,
                 status="failed",
@@ -288,6 +316,7 @@ class TaskCommandSkill:
         if edited_labels is not None:
             titles = [t.strip() for t in edited_labels if t.strip()][:_PREVIEW_MAX]
         if not titles:
+            self._pending_preview.pop(record_id, None)
             return ExecutionResult(
                 record_id=record_id,
                 status="failed",
@@ -295,7 +324,8 @@ class TaskCommandSkill:
                 error_code="INTENT_UNKNOWN",
                 tool="create_task",
             )
-        created = [self._tasks.add(title, due_at=due) for title in titles]
+        created = self._tasks.add_many(titles, due_at=due)  # 失败整体回滚,异常上抛可重试
+        self._pending_preview.pop(record_id, None)  # 全部成功提交后才清除预览
         return ExecutionResult(
             record_id=record_id,
             status="success",

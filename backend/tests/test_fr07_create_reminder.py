@@ -326,4 +326,6 @@ def test_fr07_create_task_visible_in_desk(tmp_path: Path) -> None:
     mine = [t for t in tasks if t["kind"] == "task" and "回复客户邮件" in t["title"]]
     assert len(mine) == 1
     assert mine[0]["status"] == "未完成"
-    assert mine[0]["time"] == "明天"
+    # 相对期限落为稳定日期(FR-08),不永久保存裸"明天"
+    tomorrow = (datetime.now().astimezone() + timedelta(days=1)).date().isoformat()
+    assert mine[0]["time"] == tomorrow

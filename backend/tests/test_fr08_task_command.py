@@ -54,7 +54,7 @@ def test_fr08_create_then_list_today(
 ) -> None:
     skill, _, _ = env
     router = IntentRouter()
-    created = skill.execute(router.route("新建一个任务,明天之前回复客户邮件。"), "rec-3")
+    created = skill.execute(router.route("新建一个任务,今天之前回复客户邮件。"), "rec-3")
     assert created.status == "success"
     listed = skill.execute(router.route("查一下还有哪些没完成的任务。"), "rec-4")
     assert listed.status == "success"

@@ -156,6 +156,35 @@ class TaskRepo:
         self._conn.commit()
         return tid
 
+    def insert_many(self, titles: list[str], due_at: str | None = None) -> list[str]:
+        """批量新建任务(同一事务):任一写入失败整体 rollback,tasks 不留部分数据;
+        全部成功才 commit,返回 id 列表。多任务预览确认专用(FR-08)。"""
+        now = _utc_now()
+        ids = [_new_id() for _ in titles]
+        try:
+            for tid, title in zip(ids, titles, strict=True):
+                self._conn.execute(
+                    "INSERT INTO tasks (id, source, title, status, due_at, created_at, updated_at)"
+                    " VALUES (?, 'mock', ?, 'open', ?, ?, ?)",
+                    (tid, title, due_at, now, now),
+                )
+        except Exception:
+            self._conn.rollback()
+            raise
+        self._conn.commit()
+        return ids
+
+    def list_today(self, today: str) -> list[sqlite3.Row]:
+        """今日任务:due_at 日期前缀等于本机今日(YYYY-MM-DD)且 status=open。
+
+        无截止时间或不可解析的旧值(如裸"明天")不匹配日期前缀,安全忽略(FR-08)。
+        """
+        return self._conn.execute(
+            "SELECT * FROM tasks WHERE status = 'open' AND due_at IS NOT NULL"
+            " AND substr(due_at, 1, 10) = ? ORDER BY created_at",
+            (today,),
+        ).fetchall()
+
     def mark_done(self, task_id: str, completed_via: str) -> None:
         """标记完成;completed_via ∈ voice/pc(语音完成 ≤5s 撤卡,08 §1.3)。"""
         self._conn.execute(
@@ -260,6 +289,39 @@ class CardRepo:
             (reason, _utc_now(), card_id),
         )
         self._conn.commit()
+
+
+def insert_reminder_with_tasks(
+    cards: CardRepo,
+    tasks: TaskRepo,
+    card_id: str,
+    title: str,
+    remind_at: str,
+    task_titles: list[str],
+) -> None:
+    """"提醒 + 多任务"复合确认(FR-07/08):timer 卡与全部任务写入同一事务。
+
+    任一写入失败整体 rollback(cards/tasks 均不留部分数据),调用方保留 pending 可重试;
+    不引入事务框架。cards 与 tasks 必须由同一 sqlite3 连接装配(装配层现状)。
+    """
+    conn = cards._conn
+    now = _utc_now()
+    try:
+        conn.execute(
+            "INSERT INTO cards (id, kind, ref_task_id, title, body, status, remind_at,"
+            " created_at, updated_at) VALUES (?, 'timer', NULL, ?, NULL, 'active', ?, ?, ?)",
+            (card_id, title, remind_at, now, now),
+        )
+        for task_title in task_titles:
+            conn.execute(
+                "INSERT INTO tasks (id, source, title, status, due_at, created_at, updated_at)"
+                " VALUES (?, 'mock', ?, 'open', NULL, ?, ?)",
+                (_new_id(), task_title, now, now),
+            )
+    except Exception:
+        conn.rollback()
+        raise
+    conn.commit()
 
 
 class BriefingRepo:

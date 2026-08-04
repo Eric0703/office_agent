@@ -19,7 +19,7 @@ from agent_host.skills.task_command import (
     ExecutionResult,
     clean_segment,
 )
-from agent_host.store.repos import CardRepo, TaskRepo
+from agent_host.store.repos import CardRepo, TaskRepo, insert_reminder_with_tasks
 
 CONFIRM_ID = "remind:confirm"
 CANCEL_ID = "remind:cancel"
@@ -256,8 +256,12 @@ class ReminderSkill:
         )
 
     def confirm_pending(self, record_id: str, candidate_id: str) -> ExecutionResult:
-        """clarify.select 终态:确认才写入;取消/过期不产生任何任务或提醒。"""
-        pending = self._pending.pop(record_id, None)
+        """clarify.select 终态:确认才写入;取消/过期不产生任何任务或提醒。
+
+        复合确认(提醒 + 多任务)经 store 层单事务落库(insert_reminder_with_tasks):
+        任一写入失败整体回滚、异常上抛,pending 保留可重试;全部成功提交后才清除 pending。
+        """
+        pending = self._pending.get(record_id)
         if pending is None:
             return ExecutionResult(
                 record_id=record_id,
@@ -267,6 +271,7 @@ class ReminderSkill:
                 tool="create_reminder",
             )
         if candidate_id == CANCEL_ID:
+            self._pending.pop(record_id, None)
             return ExecutionResult(
                 record_id=record_id,
                 status="success",
@@ -274,6 +279,7 @@ class ReminderSkill:
                 tool="create_reminder",
             )
         if candidate_id != CONFIRM_ID:
+            self._pending.pop(record_id, None)
             return ExecutionResult(
                 record_id=record_id,
                 status="failed",
@@ -292,13 +298,27 @@ class ReminderSkill:
             )
         now = pending.now or datetime.now().astimezone()
         shown = ""
-        if pending.reminder is not None:
-            assert pending.reminder.remind_at is not None
-            self._create_card(pending.reminder)
-            shown = display_remind(pending.reminder.remind_at, now, pending.reminder.content or "")
-        for title in pending.tasks:
+        if pending.reminder is not None and pending.tasks:
+            # 复合:timer 卡 + 全部任务同一事务;失败整体回滚,pending 保留(上面未 pop)
             assert self._tasks is not None
-            self._tasks.insert(title)
+            assert pending.reminder.remind_at is not None
+            assert pending.reminder.content is not None
+            insert_reminder_with_tasks(
+                self._cards,
+                self._tasks,
+                uuid.uuid4().hex,
+                pending.reminder.content,
+                pending.reminder.remind_at.isoformat(),
+                pending.tasks,
+            )
+            shown = display_remind(pending.reminder.remind_at, now, pending.reminder.content)
+        elif pending.reminder is not None:
+            assert pending.reminder.remind_at is not None
+            self._create_card(pending.reminder)  # 单提醒:单卡写入;失败同样保留 pending
+            shown = display_remind(
+                pending.reminder.remind_at, now, pending.reminder.content or ""
+            )
+        self._pending.pop(record_id, None)  # 全部成功提交后才清除 pending
         if pending.reminder is not None and pending.tasks:
             title = f"已创建:{shown} 和 {len(pending.tasks)} 个任务"
         elif pending.reminder is not None:

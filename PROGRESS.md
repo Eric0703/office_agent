@@ -1,10 +1,28 @@
 # 项目进展记录(供恢复会话使用)
 
-> 最新状态:**A1-2 基线 3a922cb、校准基线 c91f437、A1-3 基线 b85ac00、文档收尾 ad8df38、A1-4 第一小步 cf3186a 均已推送 origin/main;"待办转任务草稿"已按 Owner 决策的方案 D 实现(独立 task_drafts 表只读展示,不进 tasks 表),A1-4 功能实现完成、已通过 Codex 复审;不宣布 Gate 1 或 A1 阶段通过**。
+> 最新状态:**A1-2 基线 3a922cb、校准基线 c91f437、A1-3 基线 b85ac00、文档收尾 ad8df38、A1-4 两 checkpoint(cf3186a、af9fd53)均已推送 origin/main;A1-5(FR-08)首轮核对误判"零缺口",复审实证三个真实缺口(多任务确认非原子/复合确认非原子/list_today 未实现今日语义)已修复并补故障注入回归,已通过 Codex 复审;不宣布 Gate 1 或 A1 阶段通过**。
 > 说明:未经 Owner 另行明确安排,不运行真实外部模型测试,不修改 LLM 接入代码;不索取、不接收、不展示任何 API Key。
 > 产品决策(2026-07-22,最新):**方案 A 单屏 AI 工牌 + 三枚物理键**(主操作键[录音/麦克风标识]/上翻/下翻;第四枚"确认·返回"已删除不得恢复);方案 B 仅备选。
 > 文档权威:`docs/v2.0/` 为**候选基线(评审中,暂不生效)**;`docs/` 旧文件仅历史参考(见 `docs/README.md`);进展/待审核/未提交状态只记在本文件。
 > 下次恢复时对 AI 说:"读 PROGRESS.md 和 docs/ 规约,我们继续",即可无缝接续。
+
+## 2026-07-29(A1-5,复审通过):FR-08 任务指令技能差距核对 + 验收补测
+
+按 Owner 指令逐项对照 FR-08 核对既有实现与测试(不重写任务系统):
+
+- **核对结论(首轮,后被复审推翻)**:MVP 四指令、完成任务(唯一匹配/歧义候选/取消终态/说完即消)、新建任务(单任务直建/≤5 预览/confirm_all 才创建/cancel·过期不创建/edited_labels 生效)、定时提醒(ISO8601 解析/缺要素失败/不确定候选确认/取消不写入)、幂等与三态结果已实现并有测试。
+- **验收补测** `test_fr08_acceptance.py`(首轮 6 条):合法候选只完成其一(另一保持 open + audit executed)、create_task 缺标题失败不创建、预览非法 candidate_id 失败且预览弹掉、remind:confirm 二次确认过期不重复建卡、list_today 只读(空"无未完成任务"/非空/零副作用)、duplicate 重复上传不产生第二条任务与第二条审计(端到端 MockASR)。
+- **文档**:02 FR-08 无需改;07 模块表 task_command 行签名补齐 confirm_create/cancel_pending/complete_by_id。
+
+首轮验证:定向 62 passed;ruff 绿;全量 `--runslow` 144 passed、1 skipped;`git diff --check` 干净。
+
+**复审修复(同日,Codex 实证推翻"零缺口"结论,三缺口已修)**:
+
+1. **多任务确认原子化**:`TaskRepo.insert_many`(单事务,任一失败整体 rollback)+ `TaskAdapter.add_many`;`confirm_create` 改"成功提交后才 pop 预览",写入失败异常上抛、预览保留可重试;技能不触碰 sqlite3 连接。故障注入(trigger 强制第二条 INSERT 失败):首次确认失败 tasks=0;移除故障重试两条全创建;再确认按过期不重复。
+2. **复合确认原子化**:store 层 `insert_reminder_with_tasks`(timer 卡 + 全部任务同一事务,cards/tasks 同连接);`confirm_pending` 同样改"成功后才 pop";单提醒/取消/过期/到点触发语义不变。故障注入(第二个任务失败):timer=0、tasks=0;重试得 1 卡 + 2 任务;二次确认不重复。
+3. **list_today 真语义**(原直接返回 list_open,实测明天任务混入):今日 = due_at 日期前缀 = 本机今日 且 open;无截止/旧裸"明天"安全忽略;新建任务的今天/明天/后天在 `_resolve_due` 落成稳定 YYYY-MM-DD(技能/适配器 now_fn 可注入时钟,测试确定性);逾期规则不做(留产品决策)。既有两条测试同步(test_fr08_create_then_list_today 改"今天之前";desk 可见性断言改稳定日期)。
+
+补测 4 条(现 `test_fr08_acceptance.py` 共 10 条):list_today 过滤(今天/明天/无截止/已完成/旧裸值)、相对期限稳定日期 + 时钟前进一天命中、两条故障注入回滚重试。验证:定向 66 passed;ruff 绿;全量 `--runslow` **148 passed、1 skipped**;`git diff --check` 干净。允许范围外文件零改动(router/schema/前端/端云协议/task_drafts 未动)。
 
 ## 2026-07-29(A1-4 方案 D,复审通过):待办转任务草稿(task_drafts 只读展示)
 
